@@ -48,3 +48,46 @@ python -m venv .venv
 ```sh
 ./scripts/build_macos_app.sh
 ```
+
+## Release
+
+Releases are built by GitHub Actions when a version tag is pushed.
+
+1. Update the version in `pyproject.toml`.
+
+   ```toml
+   version = "0.1.1"
+   ```
+
+2. Add a matching entry to `CHANGELOG.md`.
+
+   ```md
+   ## 0.1.1 - 2026-06-16
+
+   ### Added
+
+   - New release notes.
+   ```
+
+3. Commit and push the changes.
+
+   ```sh
+   git add pyproject.toml CHANGELOG.md
+   git commit -m "Release 0.1.1"
+   git push origin main
+   ```
+
+4. Create and push a matching tag.
+
+   ```sh
+   git tag v0.1.1
+   git push origin v0.1.1
+   ```
+
+The release workflow checks that the tag matches `pyproject.toml`, extracts the matching `CHANGELOG.md` entry, runs the test suite, builds the macOS app, zips `Pnumi.app`, and attaches the zip to a GitHub Release. For example, `version = "0.1.1"` must be released with the tag `v0.1.1` and a `## 0.1.1` changelog entry.
+
+If a tag and GitHub Release already exist, pushing the same tag again will not create a new release. Update that release's notes from the matching `CHANGELOG.md` entry in the GitHub UI, or put those notes in `release-notes.md` and run:
+
+```sh
+gh release edit v0.1.0 --notes-file release-notes.md
+```

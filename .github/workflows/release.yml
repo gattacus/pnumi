@@ -49,6 +49,26 @@ jobs:
           set -euo pipefail
           ditto -c -k --sequesterRsrc --keepParent dist/Pnumi.app "Pnumi-${GITHUB_REF_NAME}-macos.zip"
 
+      - name: Extract changelog entry
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(
+              rf"^## {re.escape(version)}[^\n]*\n(?P<body>.*?)(?=^## |\Z)",
+              changelog,
+              re.MULTILINE | re.DOTALL,
+          )
+          if not match:
+              raise SystemExit(f"No CHANGELOG.md entry found for {version}")
+          Path("release-notes.md").write_text(match.group("body").strip() + "\n", encoding="utf-8")
+          PY
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -56,5 +76,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "Pnumi-${GITHUB_REF_NAME}-macos.zip#Pnumi macOS app" \
             --title "Pnumi $GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file release-notes.md \
             --verify-tag

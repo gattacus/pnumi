@@ -37,29 +37,39 @@ def test_typing_updates_results(qtbot, tmp_path) -> None:
 
 def test_copy_current_result(qtbot, tmp_path) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
-    window.editor.setPlainText("8 times 9")
-    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "72", timeout=1000)
+    window.editor.setPlainText("1000 + 2")
+    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "1'002", timeout=1000)
     window.copy_current_result()
-    assert QApplication.clipboard().text() == "72"
+    assert QApplication.clipboard().text() == "1002"
 
 
 def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
     window.show()
     qtbot.waitExposed(window)
-    window.editor.setPlainText("8 times 9\n5 + 6")
-    qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["72", "11"], timeout=1000)
+    window.editor.setPlainText("8 times 9\n1200 meter in cm")
+    qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["72", "120'000 cm"], timeout=1000)
 
     rect = window.results._result_pill_rect(1)
     assert rect is not None
     point = rect.center().toPoint()
 
     qtbot.mouseMove(window.results.viewport(), point)
-    assert window.results.result_at_position(point) == "11"
+    assert window.results.result_at_position(point) == "120'000 cm"
 
     qtbot.mouseClick(window.results.viewport(), Qt.MouseButton.LeftButton, pos=point)
 
-    assert QApplication.clipboard().text() == "11"
+    assert QApplication.clipboard().text() == "120000 cm"
+
+
+def test_copy_all_omits_thousands_separators_from_results(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.editor.setPlainText("1'000 + 2\n1200 meter in cm")
+    qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["1'002", "120'000 cm"], timeout=1000)
+
+    window.copy_all()
+
+    assert QApplication.clipboard().text() == "1'000 + 2\t1002\n1200 meter in cm\t120000 cm"
 
 
 def test_autocomplete_contains_builtins_and_document_variables(qtbot, tmp_path) -> None:

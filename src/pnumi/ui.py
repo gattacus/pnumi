@@ -45,6 +45,7 @@ SETTINGS_APPLICATION = "Pnumi"
 DEFAULT_WINDOW_SIZE = QSize(920, 640)
 DEFAULT_DOCUMENT_TEXT = "Cost: $20 + 56 EUR\nDiscounted: prev - 5% off\n\n1 meter 20 cm in cm\nround(1 month in days)"
 SHOW_COMPLETIONS_SHORTCUTS = [QKeySequence("Ctrl+Space"), QKeySequence("Ctrl+.")]
+CLIPBOARD_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'\u2018\u2019](?=\d{3}(?:\D|$))")
 
 
 @dataclass(frozen=True)
@@ -204,7 +205,7 @@ class ResultPane(StripedPlainTextEdit):
         if event.button() == Qt.MouseButton.LeftButton:
             result = self.result_at_position(event.position().toPoint())
             if result:
-                QApplication.clipboard().setText(result)
+                QApplication.clipboard().setText(_clipboard_result_text(result))
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -315,6 +316,10 @@ class SettingsDialog(QDialog):
 
     def dark_mode_enabled(self) -> bool:
         return self.dark_mode_checkbox.isChecked()
+
+
+def _clipboard_result_text(text: str) -> str:
+    return CLIPBOARD_THOUSANDS_SEPARATOR_RE.sub("", text)
 
 
 STATIC_COMPLETIONS = sorted(
@@ -683,14 +688,14 @@ class MainWindow(QMainWindow):
         return lines[line] if line < len(lines) else ""
 
     def copy_current_result(self) -> None:
-        QApplication.clipboard().setText(self.current_result_text())
+        QApplication.clipboard().setText(_clipboard_result_text(self.current_result_text()))
 
     def copy_all(self) -> None:
         source = self.editor.toPlainText().splitlines()
         results = self.results.toPlainText().splitlines()
         rows = []
         for index, line in enumerate(source):
-            result = results[index] if index < len(results) else ""
+            result = _clipboard_result_text(results[index]) if index < len(results) else ""
             rows.append(f"{line}\t{result}" if result else line)
         QApplication.clipboard().setText("\n".join(rows))
 

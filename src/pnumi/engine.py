@@ -53,12 +53,17 @@ TIMEZONES = {
 CONVERSION_RE = re.compile(r"\s+(?:in|into|as|to)\s+", re.IGNORECASE)
 ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
 DECIMAL_NUMBER_PATTERN = r"\d+(?:[ ,']\d{3})*(?:\.\d+)?|\d*\.\d+"
+COMPOUND_UNIT_SEGMENT_PATTERN = r"[A-Za-z°][A-Za-z0-9°]*"
 THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'](?=\d{3}(?:\D|$))")
+PERCENT_VALUE_RE = re.compile(rf"^(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*%$")
+COMPOUND_VALUE_RE = re.compile(
+    rf"^(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>{COMPOUND_UNIT_SEGMENT_PATTERN}(?:\s*/\s*{COMPOUND_UNIT_SEGMENT_PATTERN})+)$"
+)
 NUMBER_UNIT_RE = re.compile(
     rf"(?P<prefix>[$€£])?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>[A-Za-z°][A-Za-z0-9° ]*)?"
 )
 VALUE_TOKEN_RE = re.compile(
-    rf"(?P<prefix>[$€£])?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>[A-Za-z°][A-Za-z0-9°]*(?:\s+[A-Za-z°][A-Za-z0-9°]*)?)?"
+    rf"(?P<prefix>[$€£])?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>%|[A-Za-z°][A-Za-z0-9°]*(?:\s+[A-Za-z°][A-Za-z0-9°]*)?(?:\s*/\s*[A-Za-z°][A-Za-z0-9°]*)*)?"
 )
 
 
@@ -155,6 +160,9 @@ def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Val
     parsed = _parse_value(expression, context)
     if parsed is not None:
         return parsed, scientific
+    typed = _try_typed_arithmetic(expression, context)
+    if typed is not None:
+        return typed, scientific
     valued = _try_valued_arithmetic(expression, context)
     if valued is not None:
         return valued, scientific
@@ -272,6 +280,432 @@ def _try_valued_arithmetic(expression: str, context: DocumentContext) -> Value |
     return Value(magnitude=magnitude, unit=target.unit, currency=target.currency)
 
 
+def _try_typed_arithmetic(expression: str, context: DocumentContext) -> Value | None:
+    normalized, literals, has_typed_value = _prepare_typed_expression(expression, context)
+    if not has_typed_value:
+        return None
+    try:
+        tree = ast.parse(normalized, mode="eval")
+    except SyntaxError:
+        return None
+    return _eval_value_ast(tree.body, context, literals)
+
+
+def _prepare_typed_expression(expression: str, context: DocumentContext) -> tuple[str, dict[str, Value], bool]:
+    literals: dict[str, Value] = {}
+    parts: list[str] = []
+    cursor = 0
+    previous_was_literal = False
+    has_typed_value = _expression_mentions_typed_name(expression, context)
+    for match in VALUE_TOKEN_RE.finditer(expression):
+        token = match.group(0)
+        if not token.strip():
+            continue
+        value = _parse_value(token, context)
+        if value is None or not _has_kind(value):
+            continue
+        gap = expression[cursor : match.start()]
+        if previous_was_literal and not gap.strip():
+            gap = "+"
+        placeholder = f"__value{len(literals)}"
+        literals[placeholder] = value
+        parts.append(gap)
+        parts.append(placeholder)
+        cursor = match.end()
+        previous_was_literal = True
+        has_typed_value = True
+    parts.append(expression[cursor:])
+    normalized = _normalize_numeric("".join(parts), context, replace_values=False)
+    normalized, has_named_typed_value = _replace_value_names_with_literals(normalized, context, literals)
+    has_typed_value = has_typed_value or has_named_typed_value
+    return normalized, literals, has_typed_value
+
+
+def _replace_value_names_with_literals(expression: str, context: DocumentContext, literals: dict[str, Value]) -> tuple[str, bool]:
+    has_typed_value = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal has_typed_value
+        name = match.group(0)
+        if name in literals:
+            return name
+        if name.lower() == "prev":
+            if not context.previous_results:
+                return name
+            value = context.previous_results[-1]
+        else:
+            value = context.variables.get(name)
+            if value is None:
+                return name
+        if value.magnitude is None:
+            return name
+        placeholder = f"__value{len(literals)}"
+        literals[placeholder] = value
+        has_typed_value = has_typed_value or _has_kind(value)
+        return placeholder
+
+    return re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\b", replace, expression), has_typed_value
+
+
+def _expression_mentions_typed_name(expression: str, context: DocumentContext) -> bool:
+    for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expression):
+        name = match.group(0)
+        if name.lower() == "prev":
+            return bool(context.previous_results and _has_kind(context.previous_results[-1]))
+        value = context.variables.get(name)
+        if value is not None and _has_kind(value):
+            return True
+    return False
+
+
+def _eval_value_ast(node: ast.AST, context: DocumentContext, literals: dict[str, Value]) -> Value:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+        return Value.number(Decimal(str(node.value)))
+    if isinstance(node, ast.BinOp) and type(node.op) in ALLOWED_BINOPS:
+        left = _eval_value_ast(node.left, context, literals)
+        right = _eval_value_ast(node.right, context, literals)
+        return _eval_value_binop(left, right, node.op, context)
+    if isinstance(node, ast.UnaryOp):
+        value = _eval_value_ast(node.operand, context, literals)
+        if isinstance(node.op, ast.USub):
+            return _same_kind(value, -_magnitude(value))
+        if isinstance(node.op, ast.UAdd):
+            return value
+    if isinstance(node, ast.Name):
+        if node.id in literals:
+            return literals[node.id]
+        if node.id.lower() == "pi":
+            return Value.number(Decimal(str(math.pi)))
+        if node.id.lower() == "e":
+            return Value.number(Decimal(str(math.e)))
+        if node.id.lower() == "prev":
+            if not context.previous_results:
+                raise ValueError("No previous result")
+            return context.previous_results[-1]
+        value = context.variables.get(node.id)
+        if value and value.magnitude is not None:
+            return value
+        raise ValueError(f"Unknown variable: {node.id}")
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        args = [_eval_value_ast(arg, context, literals) for arg in node.args]
+        result = _call_function(node.func.id, [_magnitude(arg) for arg in args])
+        if args and node.func.id.lower() in {"round", "ceil", "floor"} and _has_kind(args[0]):
+            return _same_kind(args[0], result)
+        return Value.number(result)
+    raise ValueError("Unsupported expression")
+
+
+def _eval_value_binop(left: Value, right: Value, op: ast.operator, context: DocumentContext) -> Value:
+    if isinstance(op, ast.Add):
+        return _add_values(left, right, context)
+    if isinstance(op, ast.Sub):
+        return _subtract_values(left, right, context)
+    if isinstance(op, ast.Mult):
+        return _multiply_values(left, right, context)
+    if isinstance(op, ast.Div):
+        return _divide_values(left, right, context)
+    if isinstance(op, ast.Mod):
+        return _mod_values(left, right, context)
+    if isinstance(op, ast.Pow):
+        return _pow_values(left, right)
+    if _has_kind(left) or _has_kind(right):
+        raise ValueError("Unsupported typed arithmetic")
+    return Value.number(ALLOWED_BINOPS[type(op)](_magnitude(left), _magnitude(right)))
+
+
+def _add_values(left: Value, right: Value, context: DocumentContext) -> Value:
+    if _is_percent(right) and not _is_percent(left):
+        return _same_kind(left, _magnitude(left) * (Decimal("1") + _percent_ratio(right)))
+    if _is_percent(left) and not _is_percent(right):
+        if _has_kind(right):
+            raise ValueError("Cannot add a typed value to a percentage")
+        return Value.number(_magnitude(left) + _magnitude(right), "percent")
+    target = left if _has_kind(left) else right
+    right_magnitude = _coerce_value_to_target(right, target, context)
+    return _same_kind(target, _magnitude(left) + right_magnitude)
+
+
+def _subtract_values(left: Value, right: Value, context: DocumentContext) -> Value:
+    if _is_percent(right) and not _is_percent(left):
+        return _same_kind(left, _magnitude(left) * (Decimal("1") - _percent_ratio(right)))
+    if _is_percent(left) and not _is_percent(right):
+        if _has_kind(right):
+            raise ValueError("Cannot subtract a typed value from a percentage")
+        return Value.number(_magnitude(left) - _magnitude(right), "percent")
+    target = left if _has_kind(left) else right
+    right_magnitude = _coerce_value_to_target(right, target, context)
+    return _same_kind(target, _magnitude(left) - right_magnitude)
+
+
+def _multiply_values(left: Value, right: Value, context: DocumentContext) -> Value:
+    if _is_percent(left) and _is_percent(right):
+        return Value.number(_magnitude(left) * _percent_ratio(right), "percent")
+    if _is_percent(right):
+        return _same_kind(left, _magnitude(left) * _percent_ratio(right))
+    if _is_percent(left):
+        return _same_kind(right, _magnitude(right) * _percent_ratio(left))
+    if not _has_kind(left) and not _has_kind(right):
+        return Value.number(_magnitude(left) * _magnitude(right))
+    if not _has_kind(right):
+        return _same_kind(left, _magnitude(left) * _magnitude(right))
+    if not _has_kind(left):
+        return _same_kind(right, _magnitude(left) * _magnitude(right))
+    if left.currency and right.currency:
+        raise ValueError("Cannot multiply currencies")
+    return _combine_value_products(left, right, "*", context)
+
+
+def _divide_values(left: Value, right: Value, context: DocumentContext) -> Value:
+    if _is_percent(right) and not _is_percent(left):
+        return _same_kind(left, _magnitude(left) / _percent_ratio(right))
+    if _is_percent(left) and _is_percent(right):
+        return Value.number(_magnitude(left) / _magnitude(right))
+    if _is_percent(left):
+        raise ValueError("Cannot divide a percentage by a value")
+    if not _has_kind(left) and not _has_kind(right):
+        return Value.number(_magnitude(left) / _magnitude(right))
+    if not _has_kind(right):
+        return _same_kind(left, _magnitude(left) / _magnitude(right))
+    if not _has_kind(left):
+        return _combine_value_products(left, right, "/", context)
+    if left.currency and right.currency:
+        right_magnitude = _coerce_value_to_target(right, left, context)
+        return Value.number(_magnitude(left) / right_magnitude)
+    if left.unit and right.unit and _compatible_units(left.unit, right.unit, context):
+        right_magnitude = _coerce_value_to_target(right, left, context)
+        return Value.number(_magnitude(left) / right_magnitude)
+    return _combine_value_products(left, right, "/", context)
+
+
+def _mod_values(left: Value, right: Value, context: DocumentContext) -> Value:
+    target = left if _has_kind(left) else right
+    right_magnitude = _coerce_value_to_target(right, target, context)
+    return _same_kind(target, _magnitude(left) % right_magnitude)
+
+
+def _pow_values(left: Value, right: Value) -> Value:
+    exponent = _magnitude(right)
+    magnitude = _magnitude(left) ** exponent
+    if not _has_kind(left):
+        return Value.number(magnitude)
+    if _has_kind(right):
+        raise ValueError("Exponent must be unitless")
+    if exponent == 1:
+        return _same_kind(left, magnitude)
+    if exponent == 0:
+        return Value.number(magnitude)
+    if exponent == exponent.to_integral():
+        return Value.number(magnitude, f"{_kind_label(left)}^{int(exponent)}")
+    raise ValueError("Fractional powers of typed values are unsupported")
+
+
+def _coerce_value_to_target(value: Value, target: Value, context: DocumentContext) -> Decimal:
+    magnitude = _magnitude(value)
+    if not _has_kind(value):
+        return magnitude
+    if target.currency:
+        if value.currency is None:
+            raise ValueError(f"Cannot combine {_kind_label(value)} with {target.currency}")
+        if value.currency == target.currency:
+            return magnitude
+        rate = context.rate_provider.get_rate(value.currency, target.currency)
+        return magnitude * rate
+    if target.unit:
+        if value.unit is None:
+            raise ValueError(f"Cannot combine {_kind_label(value)} with {target.unit}")
+        if value.unit == target.unit:
+            return magnitude
+        return convert_magnitude(
+            magnitude,
+            value.unit,
+            target.unit,
+            ppi=context.settings.get("ppi", Decimal("96")),
+            em=context.settings.get("em", Decimal("16")),
+        )
+    return magnitude
+
+
+def _compatible_units(left: str, right: str, context: DocumentContext) -> bool:
+    if left == right:
+        return True
+    try:
+        convert_magnitude(
+            Decimal("1"),
+            right,
+            left,
+            ppi=context.settings.get("ppi", Decimal("96")),
+            em=context.settings.get("em", Decimal("16")),
+        )
+        return True
+    except ValueError:
+        return False
+
+
+def _magnitude(value: Value) -> Decimal:
+    return value.magnitude or Decimal("0")
+
+
+def _is_percent(value: Value) -> bool:
+    return value.unit == "percent"
+
+
+def _percent_ratio(value: Value) -> Decimal:
+    return _magnitude(value) / Decimal("100")
+
+
+def _has_kind(value: Value) -> bool:
+    return bool(value.unit or value.currency)
+
+
+def _kind_label(value: Value) -> str:
+    if value.currency:
+        return value.currency
+    if value.unit:
+        return _compound_unit_label(value.unit)
+    return ""
+
+
+def _compound_unit_label(unit: str) -> str:
+    return {"hour": "h", "minute": "min", "second": "s"}.get(unit, unit)
+
+
+def _combine_value_products(left: Value, right: Value, operator_text: str, context: DocumentContext | None = None) -> Value:
+    left_factors = _value_unit_factors(left, context)
+    right_factors = _value_unit_factors(right, context)
+    direction = 1 if operator_text == "*" else -1
+    adjusted_right_magnitude, adjusted_right_factors = _align_factors_for_cancellation(
+        _magnitude(right),
+        left_factors,
+        right_factors,
+        direction,
+        context,
+    )
+    magnitude = _magnitude(left) * adjusted_right_magnitude if operator_text == "*" else _magnitude(left) / adjusted_right_magnitude
+    result_factors = dict(left_factors)
+    for label, exponent in adjusted_right_factors.items():
+        result_factors[label] = result_factors.get(label, 0) + (exponent * direction)
+        if result_factors[label] == 0:
+            del result_factors[label]
+    return _value_from_unit_factors(magnitude, result_factors)
+
+
+def _value_unit_factors(value: Value, context: DocumentContext | None = None) -> dict[str, int]:
+    if value.currency:
+        return {value.currency: 1}
+    if value.unit:
+        return _unit_label_factors(value.unit, context)
+    return {}
+
+
+def _unit_label_factors(label: str, context: DocumentContext | None = None) -> dict[str, int]:
+    factors: dict[str, int] = {}
+    operator_text = "*"
+    for part in re.split(r"([*/])", label):
+        part = part.strip()
+        if not part:
+            continue
+        if part in {"*", "/"}:
+            operator_text = part
+            continue
+        factor, exponent = _parse_unit_factor(part, context)
+        signed_exponent = exponent if operator_text == "*" else -exponent
+        factors[factor] = factors.get(factor, 0) + signed_exponent
+        if factors[factor] == 0:
+            del factors[factor]
+    return factors
+
+
+def _parse_unit_factor(part: str, context: DocumentContext | None = None) -> tuple[str, int]:
+    name, separator, exponent_text = part.partition("^")
+    exponent = int(exponent_text) if separator else 1
+    currency = _currency_code(name)
+    if currency:
+        return currency, exponent
+    ppi = context.settings.get("ppi", Decimal("96")) if context else Decimal("96")
+    em = context.settings.get("em", Decimal("16")) if context else Decimal("16")
+    unit = canonical_unit(name, ppi=ppi, em=em)
+    if unit:
+        return unit.canonical, exponent
+    return name, exponent
+
+
+def _align_factors_for_cancellation(
+    magnitude: Decimal,
+    existing_factors: dict[str, int],
+    incoming_factors: dict[str, int],
+    direction: int,
+    context: DocumentContext | None,
+) -> tuple[Decimal, dict[str, int]]:
+    adjusted = dict(incoming_factors)
+    adjusted_magnitude = magnitude
+    for incoming_label, exponent in list(incoming_factors.items()):
+        effective_exponent = exponent * direction
+        if effective_exponent == 0:
+            continue
+        target_label = _find_cancelling_factor(incoming_label, effective_exponent, existing_factors, context)
+        if target_label is None or target_label == incoming_label:
+            continue
+        conversion = _unit_conversion_factor(incoming_label, target_label, context)
+        adjusted_magnitude *= conversion ** abs(exponent)
+        adjusted[incoming_label] -= exponent
+        if adjusted[incoming_label] == 0:
+            del adjusted[incoming_label]
+        adjusted[target_label] = adjusted.get(target_label, 0) + exponent
+    return adjusted_magnitude, adjusted
+
+
+def _find_cancelling_factor(
+    incoming_label: str,
+    incoming_exponent: int,
+    existing_factors: dict[str, int],
+    context: DocumentContext | None,
+) -> str | None:
+    for existing_label, existing_exponent in existing_factors.items():
+        if existing_exponent * incoming_exponent >= 0:
+            continue
+        if existing_label == incoming_label:
+            return existing_label
+        if _unit_conversion_factor(incoming_label, existing_label, context) is not None:
+            return existing_label
+    return None
+
+
+def _unit_conversion_factor(from_unit: str, to_unit: str, context: DocumentContext | None) -> Decimal | None:
+    try:
+        return convert_magnitude(
+            Decimal("1"),
+            from_unit,
+            to_unit,
+            ppi=context.settings.get("ppi", Decimal("96")) if context else Decimal("96"),
+            em=context.settings.get("em", Decimal("16")) if context else Decimal("16"),
+        )
+    except ValueError:
+        return None
+
+
+def _value_from_unit_factors(magnitude: Decimal, factors: dict[str, int]) -> Value:
+    if not factors:
+        return Value.number(magnitude)
+    if len(factors) == 1:
+        [(label, exponent)] = factors.items()
+        if exponent == 1 and _currency_code(label):
+            return Value.money(magnitude, label)
+    return Value.number(magnitude, _format_unit_factors(factors))
+
+
+def _format_unit_factors(factors: dict[str, int]) -> str:
+    positive = [(label, exponent) for label, exponent in factors.items() if exponent > 0]
+    negative = [(label, -exponent) for label, exponent in factors.items() if exponent < 0]
+    numerator = "*".join(_format_unit_factor(label, exponent) for label, exponent in positive) or "1"
+    denominator = "*".join(_format_unit_factor(label, exponent) for label, exponent in negative)
+    return f"{numerator}/{denominator}" if denominator else numerator
+
+
+def _format_unit_factor(label: str, exponent: int) -> str:
+    display = _compound_unit_label(label)
+    return display if exponent == 1 else f"{display}^{exponent}"
+
+
 def _iter_value_tokens(expression: str, context: DocumentContext):
     for match in VALUE_TOKEN_RE.finditer(expression):
         token = match.group(0)
@@ -365,6 +799,14 @@ def _parse_value(expression: str, context: DocumentContext) -> Value | None:
         return Value.date_time(date.today())
     if expression.lower() == "now":
         return Value.date_time(datetime.now().replace(microsecond=0))
+    percent_match = PERCENT_VALUE_RE.fullmatch(expression)
+    if percent_match:
+        return Value.number(_parse_decimal(percent_match.group("num")), "percent")
+    compound_match = COMPOUND_VALUE_RE.fullmatch(expression)
+    if compound_match:
+        number = _parse_decimal(compound_match.group("num"))
+        suffix = compound_match.group("suffix")
+        return Value.number(number, _format_unit_factors(_unit_label_factors(suffix, context)))
     match = NUMBER_UNIT_RE.fullmatch(expression)
     if not match:
         return None
@@ -470,7 +912,7 @@ def _eval_numeric(expression: str, context: DocumentContext) -> Decimal:
         raise ValueError(f"Invalid expression: {expression}") from exc
 
 
-def _normalize_numeric(expression: str, context: DocumentContext) -> str:
+def _normalize_numeric(expression: str, context: DocumentContext, replace_values: bool = True) -> str:
     text = expression
     text = text.replace("×", "*").replace("÷", "/").replace("−", "-")
     text = re.sub(r"\bmultiplied\s+by\b", "*", text, flags=re.IGNORECASE)
@@ -496,13 +938,14 @@ def _normalize_numeric(expression: str, context: DocumentContext) -> str:
     text = re.sub(r"\bpi\b", "pi", text, flags=re.IGNORECASE)
     text = re.sub(r"\be\b", "e", text, flags=re.IGNORECASE)
     text = _strip_thousands_separators(text)
-    for name, value in context.variables.items():
-        if value.magnitude is not None:
-            text = re.sub(rf"\b{re.escape(name)}\b", f"({value.magnitude})", text)
-    if context.previous_results:
-        prev = context.previous_results[-1]
-        if prev.magnitude is not None:
-            text = re.sub(r"\bprev\b", f"({prev.magnitude})", text, flags=re.IGNORECASE)
+    if replace_values:
+        for name, value in context.variables.items():
+            if value.magnitude is not None:
+                text = re.sub(rf"\b{re.escape(name)}\b", f"({value.magnitude})", text)
+        if context.previous_results:
+            prev = context.previous_results[-1]
+            if prev.magnitude is not None:
+                text = re.sub(r"\bprev\b", f"({prev.magnitude})", text, flags=re.IGNORECASE)
     return text
 
 

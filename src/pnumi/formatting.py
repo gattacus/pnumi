@@ -57,5 +57,7 @@ def format_value(value: Value | None, scientific: bool = False) -> str:
     if value.currency:
         return f"{base} {value.currency}"
     if value.unit:
+        if value.unit == "percent":
+            return f"{base} %"
         return f"{base} {value.unit}"
     return base

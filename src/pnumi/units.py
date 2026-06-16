@@ -83,7 +83,7 @@ def add_ratio_units() -> None:
 
     add_unit("second", "duration", "1", ["sec", "secs", "s", "seconds"])
     add_unit("minute", "duration", "60", ["min", "mins", "minutes"])
-    add_unit("hour", "duration", "3600", ["hr", "hrs", "hours"])
+    add_unit("hour", "duration", "3600", ["h", "hr", "hrs", "hours"])
     add_unit("day", "duration", "86400", ["days"])
     add_unit("week", "duration", "604800", ["weeks"])
     add_unit("month", "duration", "2628000", ["months"])

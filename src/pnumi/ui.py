@@ -412,7 +412,7 @@ HIGHLIGHT_KEYWORDS = sorted(
     reverse=True,
 )
 HIGHLIGHT_KEYWORD_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:"
+    r"(?<![A-Za-z_])(?:"
     + "|".join(re.escape(word).replace(r"\ ", r"\s+") for word in HIGHLIGHT_KEYWORDS)
     + r")(?![A-Za-z0-9_])",
     re.IGNORECASE,

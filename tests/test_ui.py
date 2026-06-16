@@ -278,6 +278,23 @@ def test_variables_and_keywords_use_distinct_high_contrast_colors(qtbot) -> None
     assert _format_color_at(second_line_formats, 11) == KEYWORD_HIGHLIGHT_COLOR
 
 
+def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText("speed = 500km/h\ntime = 5min\nrate = 10EUR/h")
+    editor.highlighter.rehighlight()
+
+    first_line_formats = editor.document().firstBlock().layout().formats()
+    second_line_formats = editor.document().firstBlock().next().layout().formats()
+    third_line_formats = editor.document().firstBlock().next().next().layout().formats()
+
+    assert _format_color_at(first_line_formats, 11) == KEYWORD_HIGHLIGHT_COLOR
+    assert _format_color_at(first_line_formats, 14) == KEYWORD_HIGHLIGHT_COLOR
+    assert _format_color_at(second_line_formats, 8) == KEYWORD_HIGHLIGHT_COLOR
+    assert _format_color_at(third_line_formats, 9) == KEYWORD_HIGHLIGHT_COLOR
+    assert _format_color_at(third_line_formats, 13) == KEYWORD_HIGHLIGHT_COLOR
+
+
 def _format_color_at(formats, index: int) -> QColor | None:
     for item in formats:
         if item.start <= index < item.start + item.length:

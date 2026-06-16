@@ -8,3 +8,4 @@ build/
 dist/
 Pnumi.spec
 .DS_Store
+temp/

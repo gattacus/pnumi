@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 
 from PySide6.QtCore import QPoint, QRectF, QSize, QSettings, QStringListModel, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat, QTextCursor
@@ -44,8 +45,16 @@ SETTINGS_ORGANIZATION_DOMAIN = "uk.gattacus"
 SETTINGS_APPLICATION = "Pnumi"
 DEFAULT_WINDOW_SIZE = QSize(920, 640)
 DEFAULT_DOCUMENT_TEXT = "Cost: $20 + 56 EUR\nDiscounted: prev - 5% off\n\n1 meter 20 cm in cm\nround(1 month in days)"
-SHOW_COMPLETIONS_SHORTCUTS = [QKeySequence("Ctrl+Space"), QKeySequence("Ctrl+.")]
+SHOW_COMPLETIONS_SHORTCUTS = [QKeySequence("Meta+Space" if sys.platform == "darwin" else "Ctrl+Space")]
 CLIPBOARD_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'\u2018\u2019](?=\d{3}(?:\D|$))")
+
+
+def is_show_completions_shortcut(event: QKeyEvent) -> bool:
+    event_sequence = QKeySequence(event.keyCombination())
+    return any(
+        event_sequence.matches(shortcut) == QKeySequence.SequenceMatch.ExactMatch
+        for shortcut in SHOW_COMPLETIONS_SHORTCUTS
+    )
 
 
 @dataclass(frozen=True)
@@ -461,11 +470,11 @@ class CompletionTextEdit(StripedPlainTextEdit):
         }:
             event.ignore()
             return
-        manual_trigger = event.key() == Qt.Key.Key_Space and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        manual_trigger = is_show_completions_shortcut(event)
         if not manual_trigger:
             super().keyPressEvent(event)
         prefix = self.text_under_cursor()
-        if manual_trigger or len(prefix) >= 2:
+        if manual_trigger:
             self.show_completions(prefix)
         else:
             self.completer.popup().hide()

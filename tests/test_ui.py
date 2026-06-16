@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -115,6 +117,36 @@ def test_open_completion_popup_uses_current_word(qtbot) -> None:
 
     assert editor.completer.completionPrefix() == "sq"
     assert editor.completer.completionCount() > 0
+
+
+def test_autocomplete_opens_from_control_space_shortcut(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.setFocus()
+    editor.setPlainText("sq")
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    editor.setTextCursor(cursor)
+
+    modifier = Qt.KeyboardModifier.MetaModifier if sys.platform == "darwin" else Qt.KeyboardModifier.ControlModifier
+    qtbot.keyClick(editor, Qt.Key.Key_Space, modifier)
+
+    assert editor.toPlainText() == "sq"
+    assert editor.completer.completionPrefix() == "sq"
+    assert editor.completer.completionCount() > 0
+
+
+def test_autocomplete_does_not_open_while_typing(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.setFocus()
+
+    qtbot.keyClicks(editor, "sq")
+
+    assert editor.toPlainText() == "sq"
+    assert not editor.completer.popup().isVisible()
 
 
 def test_alternating_row_background_setting_is_persisted(qtbot, tmp_path) -> None:

@@ -97,6 +97,10 @@ def evaluate_line(text: str, context: DocumentContext | None = None) -> LineResu
         result.diagnostics.append(str(exc))
         result.display = ""
         return result
+    finally:
+        temp_keys = [k for k in context.variables if k.startswith("__paren_val_")]
+        for k in temp_keys:
+            del context.variables[k]
 
 
 def _strip_formatting(text: str) -> str:
@@ -118,10 +122,51 @@ def _decimal_places_option(value: object) -> int:
     return max(0, min(places, 20))
 
 
+def _resolve_grouping_parentheses(expression: str, context: DocumentContext) -> tuple[str, bool]:
+    scientific = False
+    while True:
+        right_index = expression.find(")")
+        if right_index == -1:
+            break
+        left_index = expression.rfind("(", 0, right_index)
+        if left_index == -1:
+            break
+
+        is_grouping = True
+        preceding_text = expression[:left_index].rstrip()
+        if preceding_text:
+            last_char = preceding_text[-1]
+            if last_char.isalnum() or last_char == "_":
+                is_grouping = False
+
+        if is_grouping:
+            sub_expr = expression[left_index + 1 : right_index].strip()
+            val, sub_sci = _evaluate_expression(sub_expr, context)
+            scientific = scientific or sub_sci
+
+            var_name = f"__paren_val_{len(context.variables)}"
+            context.variables[var_name] = val
+
+            expression = expression[:left_index] + var_name + expression[right_index + 1 :]
+        else:
+            expression = (
+                expression[:left_index]
+                + "\uFFF0"
+                + expression[left_index + 1 : right_index]
+                + "\uFFF1"
+                + expression[right_index + 1 :]
+            )
+
+    expression = expression.replace("\uFFF0", "(").replace("\uFFF1", ")")
+    return expression, scientific
+
+
 def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Value, bool]:
     expression = expression.strip()
     scientific = bool(re.search(r"\b(?:sci|scientific)\b", expression, re.IGNORECASE))
     expression = re.sub(r"\b(?:sci|scientific)\b", "", expression, flags=re.IGNORECASE).strip()
+    expression, paren_scientific = _resolve_grouping_parentheses(expression, context)
+    scientific = scientific or paren_scientific
     lower = expression.lower()
     if lower in {"sum", "total"}:
         return _aggregate(context.section_results, average=False, context=context), scientific

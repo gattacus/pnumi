@@ -390,3 +390,21 @@ def test_valid_currency_with_missing_rate_reports_rate_error() -> None:
 def test_document_evaluation() -> None:
     result = evaluate_document("Line 1: $10\nLine 2: $20\nResult: average", {"rate_provider": context().rate_provider})
     assert result.displays == ["10 USD", "20 USD", "15 USD"]
+
+
+def test_parentheses_calculations() -> None:
+    provider = StaticRateProvider(
+        {
+            ("BTC", "CHF"): Decimal("50000"),
+            ("CHF", "USD"): Decimal("1.1"),
+            ("USD", "EUR"): Decimal("0.9"),
+        }
+    )
+    ctx = DocumentContext(rate_provider=provider)
+
+    assert evaluate_line("(1 BTC in CHF)", ctx).display == "50'000 CHF"
+    assert evaluate_line("(1 BTC in CHF) to USD", ctx).display == "55'000 USD"
+    assert evaluate_line("((1 BTC in CHF) to USD)", ctx).display == "55'000 USD"
+    assert evaluate_line("(10 USD in EUR) + 5 EUR", ctx).display == "14 EUR"
+    assert evaluate_line("sqrt((1 BTC in CHF) to USD)", ctx).display.startswith("234.52")
+

@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QTextCursor, QKeySequence
+from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import QApplication
 
 from pnumi.rates import StaticRateProvider

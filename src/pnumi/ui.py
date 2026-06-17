@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRectF, QSize, QSettings, QStringListModel, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QKeyEvent, QKeySequence, QPainter, QSyntaxHighlighter, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QPoint, QRectF, QSettings, QSize, QStringListModel, Qt, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QKeyEvent,
+    QKeySequence,
+    QPainter,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,8 +25,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QLabel,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -28,12 +38,10 @@ from PySide6.QtWidgets import (
 )
 
 from .currencies import CURRENCY_ALIASES, CURRENCY_CODES
-from .engine import TIMEZONES
-from .engine import evaluate_document
+from .engine import TIMEZONES, evaluate_document
 from .formatting import DEFAULT_DECIMAL_PLACES
 from .numi_import import normalize_numi_import
 from .units import ALIASES as UNIT_ALIASES
-
 
 ALTERNATE_ROW_BACKGROUND = QColor("#efd046")
 DOCUMENT_BACKGROUND = QColor("#f7d74c")

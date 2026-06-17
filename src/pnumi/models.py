@@ -16,19 +16,19 @@ class Value:
     text: str | None = None
 
     @classmethod
-    def number(cls, value: Decimal | int | float | str, unit: str | None = None) -> "Value":
+    def number(cls, value: Decimal | int | float | str, unit: str | None = None) -> Value:
         return cls(magnitude=Decimal(str(value)), unit=unit)
 
     @classmethod
-    def money(cls, value: Decimal | int | float | str, currency: str) -> "Value":
+    def money(cls, value: Decimal | int | float | str, currency: str) -> Value:
         return cls(magnitude=Decimal(str(value)), currency=currency.upper())
 
     @classmethod
-    def date_time(cls, value: datetime | date) -> "Value":
+    def date_time(cls, value: datetime | date) -> Value:
         return cls(when=value)
 
     @classmethod
-    def delta(cls, value: timedelta) -> "Value":
+    def delta(cls, value: timedelta) -> Value:
         return cls(duration=value)
 
     @property

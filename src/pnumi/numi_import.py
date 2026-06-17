@@ -5,7 +5,6 @@ import re
 from .engine import evaluate_line
 from .models import DocumentContext
 
-
 RESULT_SEPARATOR_RE = re.compile(r"\s+=\s+")
 
 

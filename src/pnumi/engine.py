@@ -4,13 +4,13 @@ import ast
 import math
 import operator
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, DivisionByZero, InvalidOperation, getcontext
 from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
 
-from .currencies import CURRENCY_ALIASES, CURRENCY_SIGNS, currency_code
+from .currencies import CURRENCY_SIGNS, currency_code
 from .formatting import DEFAULT_DECIMAL_PLACES, format_value
 from .models import DocumentContext, DocumentResult, LineResult, Value
 from .rates import default_rate_provider
@@ -224,7 +224,7 @@ def _try_wrapped_function(expression: str, context: DocumentContext) -> Value | 
         return _same_kind(body, result)
     if match.group("name").lower() == "fromunix":
         seconds = _eval_numeric(match.group("body"), context)
-        return Value.date_time(datetime.fromtimestamp(float(seconds), tz=timezone.utc))
+        return Value.date_time(datetime.fromtimestamp(float(seconds), tz=UTC))
     body, _ = _evaluate_expression(match.group("body"), context)
     result = _call_function(match.group("name"), [body.magnitude or Decimal("0")])
     return _same_kind(body, result) if body.unit or body.currency else Value.number(result)
@@ -238,7 +238,7 @@ def _try_prefix_function(expression: str, context: DocumentContext) -> Value | N
     body_text = expression.strip()[len(match.group("name")) :].strip()
     if name == "fromunix":
         seconds = _eval_numeric(body_text, context)
-        return Value.date_time(datetime.fromtimestamp(float(seconds), tz=timezone.utc))
+        return Value.date_time(datetime.fromtimestamp(float(seconds), tz=UTC))
     body, _ = _evaluate_expression(body_text, context)
     magnitude = body.magnitude or Decimal("0")
     if name in {"sin", "cos", "tan"} and body.unit == "deg":

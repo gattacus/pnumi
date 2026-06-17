@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSize, QSettings, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QColor, QTextCursor
 from PySide6.QtWidgets import QApplication
 
@@ -20,9 +20,9 @@ from pnumi.ui import (
     RESULT_DECIMAL_PLACES_KEY,
     SHOW_COMPLETIONS_SHORTCUTS,
     VARIABLE_HIGHLIGHT_COLOR,
-    SettingsDialog,
     CompletionTextEdit,
     MainWindow,
+    SettingsDialog,
 )
 
 

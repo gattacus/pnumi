@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pnumi.rates import CompositeRateProvider, RateProvider, StaticRateProvider, YahooFinanceRateProvider, _yahoo_symbols
+from pnumi.rates import (
+    CompositeRateProvider,
+    RateProvider,
+    StaticRateProvider,
+    YahooFinanceRateProvider,
+    _yahoo_symbols,
+)
 
 
 class FailingProvider(RateProvider):

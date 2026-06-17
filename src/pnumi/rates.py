@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -54,7 +54,7 @@ class YahooFinanceRateProvider(RateProvider):
         if cached is not None:
             return cached
         rate = self._fetch_rate(base, quote, at)
-        self._write_cache(base, quote, at, {"rate": str(rate), "fetched_at": datetime.now(timezone.utc).isoformat()})
+        self._write_cache(base, quote, at, {"rate": str(rate), "fetched_at": datetime.now(UTC).isoformat()})
         return rate
 
     def _path(self, base: str, quote: str, at: date | None) -> Path:
@@ -69,7 +69,7 @@ class YahooFinanceRateProvider(RateProvider):
             data = json.loads(path.read_text(encoding="utf-8"))
             if at is None:
                 fetched = datetime.fromisoformat(data["fetched_at"])
-                if datetime.now(timezone.utc) - fetched > self.ttl:
+                if datetime.now(UTC) - fetched > self.ttl:
                     return None
             return Decimal(str(data["rate"]))
         except Exception:

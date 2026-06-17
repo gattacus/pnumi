@@ -40,6 +40,7 @@ python -m venv .venv
 ## Test
 
 ```sh
+.venv/bin/ruff check src tests
 .venv/bin/pytest
 ```
 

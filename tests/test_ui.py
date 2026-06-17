@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from pnumi.ui import (
     COMMENT_MARKDOWN_COLOR,
+    DARK_MODE_KEY,
     DARK_THEME,
     DEFAULT_DOCUMENT_TEXT,
     KEYWORD_HIGHLIGHT_COLOR,
@@ -19,6 +20,10 @@ from pnumi.ui import (
     LIGHT_THEME,
     RESULT_DECIMAL_PLACES_KEY,
     SHOW_COMPLETIONS_SHORTCUTS,
+    THEME_MODE_DARK,
+    THEME_MODE_KEY,
+    THEME_MODE_LIGHT,
+    THEME_MODE_SYSTEM,
     VARIABLE_HIGHLIGHT_COLOR,
     CompletionTextEdit,
     MainWindow,
@@ -175,19 +180,54 @@ def test_dark_mode_setting_is_persisted_and_applied(qtbot, tmp_path) -> None:
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings=settings)
     qtbot.addWidget(window)
+    assert window.theme_mode == THEME_MODE_LIGHT
     assert not window.dark_mode
     assert window.document_surface.theme == LIGHT_THEME
 
     window.set_dark_mode(True)
 
+    assert window.theme_mode == THEME_MODE_DARK
     assert window.dark_mode
     assert window.document_surface.theme == DARK_THEME
     assert DARK_THEME.document_background.name() in window.styleSheet()
+    assert settings.value(THEME_MODE_KEY) == THEME_MODE_DARK
     settings.sync()
     reloaded = MainWindow(settings=QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(reloaded)
+    assert reloaded.theme_mode == THEME_MODE_DARK
     assert reloaded.dark_mode
     assert reloaded.document_surface.theme == DARK_THEME
+
+
+def test_legacy_dark_mode_setting_is_migrated(qtbot, tmp_path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue(DARK_MODE_KEY, True)
+
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+
+    assert window.theme_mode == THEME_MODE_DARK
+    assert window.dark_mode
+    assert window.document_surface.theme == DARK_THEME
+
+
+def test_system_theme_mode_tracks_system_color_scheme(qtbot, tmp_path, monkeypatch) -> None:
+    system_dark_mode = True
+    monkeypatch.setattr(MainWindow, "_system_dark_mode", lambda _self: system_dark_mode)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue(THEME_MODE_KEY, THEME_MODE_SYSTEM)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+
+    assert window.theme_mode == THEME_MODE_SYSTEM
+    assert window.dark_mode
+    assert window.document_surface.theme == DARK_THEME
+
+    system_dark_mode = False
+    window._handle_system_color_scheme_changed()
+
+    assert not window.dark_mode
+    assert window.document_surface.theme == LIGHT_THEME
 
 
 def test_result_decimal_places_setting_is_persisted_and_display_only(qtbot, tmp_path) -> None:
@@ -257,17 +297,19 @@ def test_editor_and_results_share_one_visible_vertical_scrollbar(qtbot, tmp_path
 
 
 def test_settings_dialog_exposes_display_settings(qtbot) -> None:
-    dialog = SettingsDialog(False, True, 4)
+    dialog = SettingsDialog(False, THEME_MODE_SYSTEM, 4)
     qtbot.addWidget(dialog)
 
     assert not dialog.alternating_row_background_enabled()
-    assert dialog.dark_mode_enabled()
+    assert dialog.theme_mode() == THEME_MODE_SYSTEM
+    assert not dialog.dark_mode_enabled()
     assert dialog.result_decimal_places() == 4
     dialog.alternating_row_background_checkbox.setChecked(True)
-    dialog.dark_mode_checkbox.setChecked(False)
+    dialog.theme_mode_combo.setCurrentIndex(dialog.theme_mode_combo.findData(THEME_MODE_DARK))
     dialog.result_decimal_places_spinbox.setValue(6)
     assert dialog.alternating_row_background_enabled()
-    assert not dialog.dark_mode_enabled()
+    assert dialog.theme_mode() == THEME_MODE_DARK
+    assert dialog.dark_mode_enabled()
     assert dialog.result_decimal_places() == 6
 
 

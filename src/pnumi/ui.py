@@ -21,6 +21,7 @@ from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QCompleter,
     QDialog,
     QDialogButtonBox,
@@ -50,6 +51,11 @@ VARIABLE_HIGHLIGHT_COLOR = QColor("#4b2e83")
 KEYWORD_HIGHLIGHT_COLOR = QColor("#6b2f10")
 ALTERNATING_ROW_BACKGROUND_KEY = "editor/alternatingRowBackground"
 DARK_MODE_KEY = "editor/darkMode"
+THEME_MODE_KEY = "editor/themeMode"
+THEME_MODE_SYSTEM = "system"
+THEME_MODE_LIGHT = "light"
+THEME_MODE_DARK = "dark"
+THEME_MODES = {THEME_MODE_SYSTEM, THEME_MODE_LIGHT, THEME_MODE_DARK}
 LAST_CONTENT_KEY = "editor/lastContent"
 RESULT_DECIMAL_PLACES_KEY = "results/decimalPlaces"
 WINDOW_SIZE_KEY = "window/size"
@@ -320,7 +326,7 @@ class SettingsDialog(QDialog):
     def __init__(
         self,
         alternating_row_background: bool,
-        dark_mode: bool,
+        theme_mode: str | bool,
         result_decimal_places: int = DEFAULT_DECIMAL_PLACES,
         parent: QWidget | None = None,
     ) -> None:
@@ -328,8 +334,18 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.alternating_row_background_checkbox = QCheckBox("Alternating row background")
         self.alternating_row_background_checkbox.setChecked(alternating_row_background)
-        self.dark_mode_checkbox = QCheckBox("Dark mode")
-        self.dark_mode_checkbox.setChecked(dark_mode)
+        self.theme_mode_combo = QComboBox()
+        self.theme_mode_combo.addItem("Follow system", THEME_MODE_SYSTEM)
+        self.theme_mode_combo.addItem("Light", THEME_MODE_LIGHT)
+        self.theme_mode_combo.addItem("Dark", THEME_MODE_DARK)
+        current_theme_mode = _normalize_theme_mode(theme_mode)
+        self.theme_mode_combo.setCurrentIndex(max(0, self.theme_mode_combo.findData(current_theme_mode)))
+        theme_mode_row = QWidget()
+        theme_mode_layout = QHBoxLayout(theme_mode_row)
+        theme_mode_layout.setContentsMargins(0, 0, 0, 0)
+        theme_mode_layout.addWidget(QLabel("Theme"))
+        theme_mode_layout.addWidget(self.theme_mode_combo)
+        theme_mode_layout.addStretch(1)
         self.result_decimal_places_spinbox = QSpinBox()
         self.result_decimal_places_spinbox.setRange(0, 20)
         self.result_decimal_places_spinbox.setValue(result_decimal_places)
@@ -345,7 +361,7 @@ class SettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.alternating_row_background_checkbox)
-        layout.addWidget(self.dark_mode_checkbox)
+        layout.addWidget(theme_mode_row)
         layout.addWidget(decimal_places_row)
         layout.addWidget(buttons)
 
@@ -353,7 +369,10 @@ class SettingsDialog(QDialog):
         return self.alternating_row_background_checkbox.isChecked()
 
     def dark_mode_enabled(self) -> bool:
-        return self.dark_mode_checkbox.isChecked()
+        return self.theme_mode() == THEME_MODE_DARK
+
+    def theme_mode(self) -> str:
+        return str(self.theme_mode_combo.currentData())
 
     def result_decimal_places(self) -> int:
         return self.result_decimal_places_spinbox.value()
@@ -523,7 +542,8 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self.settings = settings or _app_settings()
         self.alternating_row_background = _settings_bool(self.settings, ALTERNATING_ROW_BACKGROUND_KEY, True)
-        self.dark_mode = _settings_bool(self.settings, DARK_MODE_KEY, False)
+        self.theme_mode = _settings_theme_mode(self.settings)
+        self.dark_mode = False
         self.result_decimal_places = _settings_int(self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20)
         self._loading_window_state = True
         self._loading_content = True
@@ -557,6 +577,7 @@ class MainWindow(QMainWindow):
         self.editor.verticalScrollBar().rangeChanged.connect(self._sync_scrollbar_range)
         self.document_scrollbar.valueChanged.connect(self._set_document_scroll)
         self._build_actions()
+        self._connect_system_theme_changes()
         self.apply_settings()
         self.editor.setPlainText(self._initial_document_text())
         self._loading_content = False
@@ -692,6 +713,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def apply_settings(self) -> None:
+        self.dark_mode = self._theme_mode_is_dark()
         self.editor.set_alternating_row_background_enabled(self.alternating_row_background)
         self.results.set_alternating_row_background_enabled(self.alternating_row_background)
         self.document_surface.set_alternating_row_background_enabled(self.alternating_row_background)
@@ -703,9 +725,13 @@ class MainWindow(QMainWindow):
         self.apply_settings()
 
     def set_dark_mode(self, enabled: bool) -> None:
-        self.dark_mode = enabled
-        self.settings.setValue(DARK_MODE_KEY, enabled)
+        self.set_theme_mode(THEME_MODE_DARK if enabled else THEME_MODE_LIGHT)
+
+    def set_theme_mode(self, mode: str) -> None:
+        self.theme_mode = _normalize_theme_mode(mode)
+        self.settings.setValue(THEME_MODE_KEY, self.theme_mode)
         self.apply_settings()
+        self.settings.setValue(DARK_MODE_KEY, self.dark_mode)
 
     def set_result_decimal_places(self, places: int) -> None:
         self.result_decimal_places = max(0, min(int(places), 20))
@@ -713,11 +739,37 @@ class MainWindow(QMainWindow):
         self.recalculate()
 
     def open_settings_dialog(self) -> None:
-        dialog = SettingsDialog(self.alternating_row_background, self.dark_mode, self.result_decimal_places, self)
+        dialog = SettingsDialog(self.alternating_row_background, self.theme_mode, self.result_decimal_places, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_alternating_row_background(dialog.alternating_row_background_enabled())
-            self.set_dark_mode(dialog.dark_mode_enabled())
+            self.set_theme_mode(dialog.theme_mode())
             self.set_result_decimal_places(dialog.result_decimal_places())
+
+    def _connect_system_theme_changes(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        style_hints = app.styleHints()
+        color_scheme_changed = getattr(style_hints, "colorSchemeChanged", None)
+        if color_scheme_changed is not None:
+            color_scheme_changed.connect(self._handle_system_color_scheme_changed)
+
+    def _handle_system_color_scheme_changed(self, *_args) -> None:
+        if self.theme_mode == THEME_MODE_SYSTEM:
+            self.apply_settings()
+
+    def _theme_mode_is_dark(self) -> bool:
+        if self.theme_mode == THEME_MODE_DARK:
+            return True
+        if self.theme_mode == THEME_MODE_SYSTEM:
+            return self._system_dark_mode()
+        return False
+
+    def _system_dark_mode(self) -> bool:
+        app = QApplication.instance()
+        if app is None:
+            return False
+        return app.styleHints().colorScheme() == Qt.ColorScheme.Dark
 
     def current_result_text(self) -> str:
         cursor = self.editor.textCursor()
@@ -802,6 +854,19 @@ def _settings_bool(settings: QSettings, key: str, default: bool) -> bool:
     if isinstance(value, str):
         return value.lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _normalize_theme_mode(value: str | bool) -> str:
+    if isinstance(value, bool):
+        return THEME_MODE_DARK if value else THEME_MODE_LIGHT
+    return value if value in THEME_MODES else THEME_MODE_LIGHT
+
+
+def _settings_theme_mode(settings: QSettings) -> str:
+    value = settings.value(THEME_MODE_KEY)
+    if isinstance(value, str) and value in THEME_MODES:
+        return value
+    return THEME_MODE_DARK if _settings_bool(settings, DARK_MODE_KEY, False) else THEME_MODE_LIGHT
 
 
 def _settings_int(settings: QSettings, key: str, default: int, minimum: int, maximum: int) -> int:

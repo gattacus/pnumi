@@ -489,21 +489,30 @@ def test_variables_and_keywords_use_distinct_high_contrast_colors(qtbot) -> None
 def test_tier2_variable_warning_highlight(qtbot) -> None:
     editor = CompletionTextEdit()
     qtbot.addWidget(editor)
-    editor.setPlainText("m = 5\n10 + m")
-    editor.set_dynamic_words(["m"])
+    editor.setPlainText("usd = 4\n5 usd\n10 + usd")
+    editor.set_dynamic_words(["usd"])
     editor.highlighter.rehighlight()
 
     first_line_formats = editor.document().firstBlock().layout().formats()
     second_line_formats = editor.document().firstBlock().next().layout().formats()
+    third_line_formats = editor.document().firstBlock().next().next().layout().formats()
 
-    # The warning format should have SpellCheckUnderline style
+    # Line 1: "usd = 4" (variable definition shadows currency, should warning-highlight "usd")
     fmt_item_1 = next(item for item in first_line_formats if item.start <= 0 < item.start + item.length)
     assert fmt_item_1.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
     assert fmt_item_1.format.underlineColor() == QColor("red")
+    assert fmt_item_1.format.foreground().color() == VARIABLE_HIGHLIGHT_COLOR
 
-    fmt_item_2 = next(item for item in second_line_formats if item.start <= 5 < item.start + item.length)
-    assert fmt_item_2.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-    assert fmt_item_2.format.underlineColor() == QColor("red")
+    # Line 2: "5 usd" (behaves as a unit literal, should highlight "usd" as keyword, no squiggle)
+    fmt_item_2 = next(item for item in second_line_formats if item.start <= 2 < item.start + item.length)
+    assert fmt_item_2.format.underlineStyle() == QTextCharFormat.UnderlineStyle.NoUnderline
+    assert fmt_item_2.format.foreground().color() == KEYWORD_HIGHLIGHT_COLOR
+
+    # Line 3: "10 + usd" (behaves as variable reference, should warning-highlight "usd")
+    fmt_item_3 = next(item for item in third_line_formats if item.start <= 5 < item.start + item.length)
+    assert fmt_item_3.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
+    assert fmt_item_3.format.underlineColor() == QColor("red")
+    assert fmt_item_3.format.foreground().color() == VARIABLE_HIGHLIGHT_COLOR
 
 
 def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:

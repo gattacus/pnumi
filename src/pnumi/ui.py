@@ -370,6 +370,7 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
         self.keyword_format = QTextCharFormat()
         self.keyword_format.setForeground(KEYWORD_HIGHLIGHT_COLOR)
         self.warning_format = QTextCharFormat()
+        self.warning_format.setForeground(VARIABLE_HIGHLIGHT_COLOR)
         self.warning_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
         self.warning_format.setUnderlineColor(QColor("red"))
         self._variable_words: list[str] = []
@@ -388,10 +389,25 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str) -> None:
         for match in HIGHLIGHT_KEYWORD_RE.finditer(text):
             self.setFormat(match.start(), match.end() - match.start(), self.keyword_format)
+        num_pattern = r"\b\d+(?:[ ,']\d{3})*(?:\.\d+)?|\b\d*\.\d+|\b0x[0-9a-fA-F]+|\b0o[0-7]+|\b0b[01]+"
         for word in self._variable_words:
-            for match in re.finditer(rf"\b{re.escape(word)}\b", text):
-                fmt = self.warning_format if word.lower() in TIER2_NAMES else self.variable_format
-                self.setFormat(match.start(), match.end() - match.start(), fmt)
+            if word.lower() in TIER2_NAMES:
+                unit_usage_re = re.compile(
+                    rf"(?:(?:{num_pattern})\s*\b{re.escape(word)}\b)"
+                    rf"|(?:\b(?:in|into|as|to)\s+\b{re.escape(word)}\b)",
+                    re.IGNORECASE,
+                )
+                for match in re.finditer(rf"\b{re.escape(word)}\b", text):
+                    is_unit = False
+                    for unit_match in unit_usage_re.finditer(text):
+                        if unit_match.start() <= match.start() < unit_match.end():
+                            is_unit = True
+                            break
+                    fmt = self.keyword_format if is_unit else self.warning_format
+                    self.setFormat(match.start(), match.end() - match.start(), fmt)
+            else:
+                for match in re.finditer(rf"\b{re.escape(word)}\b", text):
+                    self.setFormat(match.start(), match.end() - match.start(), self.variable_format)
         assignment = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", text)
         if assignment:
             var_name = assignment.group(1)

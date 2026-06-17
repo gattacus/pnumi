@@ -25,6 +25,7 @@ from pnumi.ui import (
     THEME_MODE_LIGHT,
     THEME_MODE_SYSTEM,
     VARIABLE_HIGHLIGHT_COLOR,
+    AboutDialog,
     CompletionTextEdit,
     MainWindow,
     SettingsDialog,
@@ -311,6 +312,28 @@ def test_settings_dialog_exposes_display_settings(qtbot) -> None:
     assert dialog.theme_mode() == THEME_MODE_DARK
     assert dialog.dark_mode_enabled()
     assert dialog.result_decimal_places() == 6
+
+
+def test_about_dialog_shows_app_identity_and_icon(qtbot) -> None:
+    dialog = AboutDialog()
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowTitle() == "About Pnumi"
+    assert dialog.windowIcon().isNull() is False
+    assert dialog.icon_label.pixmap() is not None
+    assert dialog.icon_label.pixmap().isNull() is False
+    assert dialog.version_label.text().startswith("Version ")
+    assert dialog.description_label.text() == "A Python/PySide6 natural language calculator."
+
+
+def test_about_action_is_available_from_main_window(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+
+    action = window.findChild(QAction, "aboutAction")
+
+    assert action is not None
+    assert action.text() == "&About Pnumi"
+    assert action.menuRole() == QAction.MenuRole.AboutRole
 
 
 def test_comments_and_markdown_use_distinct_high_contrast_color(qtbot) -> None:

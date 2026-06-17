@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRectF, QSettings, QSize, QStringListModel, Qt, QTimer
@@ -10,9 +12,11 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QIcon,
     QKeyEvent,
     QKeySequence,
     QPainter,
+    QPixmap,
     QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
@@ -378,6 +382,56 @@ class SettingsDialog(QDialog):
         return self.result_decimal_places_spinbox.value()
 
 
+class AboutDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("About Pnumi")
+        self.setWindowIcon(_app_icon())
+        self.setModal(True)
+
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("aboutIcon")
+        icon = _app_icon_pixmap(96)
+        if not icon.isNull():
+            self.icon_label.setPixmap(icon)
+        self.icon_label.setFixedSize(104, 104)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        title = QLabel("Pnumi")
+        title.setObjectName("aboutTitle")
+        title_font = title.font()
+        title_font.setPointSize(title_font.pointSize() + 7)
+        title_font.setBold(True)
+        title.setFont(title_font)
+
+        self.version_label = QLabel(f"Version {_app_version()}")
+        self.version_label.setObjectName("aboutVersion")
+        self.description_label = QLabel("A Python/PySide6 natural language calculator.")
+        self.description_label.setObjectName("aboutDescription")
+        license_label = QLabel("Released under the MIT License.")
+        license_label.setObjectName("aboutLicense")
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(6)
+        text_layout.addWidget(title)
+        text_layout.addWidget(self.version_label)
+        text_layout.addWidget(self.description_label)
+        text_layout.addWidget(license_label)
+        text_layout.addStretch(1)
+
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(16)
+        content_layout.addWidget(self.icon_label)
+        content_layout.addLayout(text_layout, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(content_layout)
+        layout.addWidget(buttons)
+
+
 def _clipboard_result_text(text: str) -> str:
     return CLIPBOARD_THOUSANDS_SEPARATOR_RE.sub("", text)
 
@@ -586,6 +640,7 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         edit_menu = self.menuBar().addMenu("&Edit")
+        help_menu = self.menuBar().addMenu("&Help")
 
         open_action = QAction("&Import", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -633,6 +688,12 @@ class MainWindow(QMainWindow):
         settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         settings_action.triggered.connect(self.open_settings_dialog)
         edit_menu.addAction(settings_action)
+
+        about_action = QAction("&About Pnumi", self)
+        about_action.setObjectName("aboutAction")
+        about_action.setMenuRole(QAction.MenuRole.AboutRole)
+        about_action.triggered.connect(self.open_about_dialog)
+        help_menu.addAction(about_action)
 
     def _apply_style(self) -> None:
         theme = DARK_THEME if self.dark_mode else LIGHT_THEME
@@ -745,6 +806,9 @@ class MainWindow(QMainWindow):
             self.set_theme_mode(dialog.theme_mode())
             self.set_result_decimal_places(dialog.result_decimal_places())
 
+    def open_about_dialog(self) -> None:
+        AboutDialog(self).exec()
+
     def _connect_system_theme_changes(self) -> None:
         app = QApplication.instance()
         if app is None:
@@ -829,13 +893,48 @@ def run(argv: list[str]) -> int:
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setOrganizationDomain(SETTINGS_ORGANIZATION_DOMAIN)
     app.setApplicationName(SETTINGS_APPLICATION)
+    app.setApplicationVersion(_app_version())
+    app.setWindowIcon(_app_icon())
     window = MainWindow()
+    window.setWindowIcon(_app_icon())
     window.show()
     return app.exec()
 
 
 def _app_settings() -> QSettings:
     return QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+
+
+def _app_icon() -> QIcon:
+    path = _resource_path("assets", "pnumi-icon.png")
+    return QIcon(str(path)) if path.is_file() else QIcon()
+
+
+def _app_icon_pixmap(size: int) -> QPixmap:
+    pixmap = QPixmap(str(_resource_path("assets", "pnumi-icon.png")))
+    if pixmap.isNull():
+        return pixmap
+    return pixmap.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _app_version() -> str:
+    try:
+        return version("pnumi")
+    except PackageNotFoundError:
+        pyproject = _resource_path("pyproject.toml")
+        if pyproject.is_file():
+            return str(tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"])
+    return "unknown"
+
+
+def _resource_path(*parts: str) -> Path:
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return root.joinpath(*parts)
 
 
 def _document_variables(text: str) -> list[str]:

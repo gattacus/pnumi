@@ -71,6 +71,23 @@ def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path) -> None:
     assert QApplication.clipboard().text() == "120000 cm"
 
 
+def test_results_are_right_aligned_in_a_minimum_width_column(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.show()
+    qtbot.waitExposed(window)
+    window.editor.setPlainText("1 + 1\n1761 eur")
+    qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["2", "1'761 EUR"], timeout=1000)
+
+    assert window.results.document().defaultTextOption().alignment() == Qt.AlignmentFlag.AlignRight
+    assert window.results.minimumWidth() == window.results.maximumWidth()
+    assert window.results.minimumWidth() == window.results.content_width(["2", "1'761 EUR"])
+    assert window.results.document().size().width() <= window.results.viewport().width()
+    rect = window.results._result_pill_rect(1)
+    assert rect is not None
+    assert rect.right() <= window.results.viewport().width()
+    assert window.results.viewport().width() - rect.right() < window.results.fontMetrics().averageCharWidth()
+
+
 def test_copy_all_omits_thousands_separators_from_results(qtbot, tmp_path) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("1'000 + 2\n1200 meter in cm")
@@ -293,6 +310,7 @@ def test_editor_and_results_share_one_visible_vertical_scrollbar(qtbot, tmp_path
 
     assert window.editor.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert window.results.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert window.results.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert window.splitter.handleWidth() == 0
     assert window.document_surface.layout().spacing() == 0
 

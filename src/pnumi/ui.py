@@ -5,6 +5,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
+from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRectF, QSettings, QSize, QStringListModel, Qt, QTimer
@@ -20,6 +21,7 @@ from PySide6.QtGui import (
     QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
+    QTextOption,
 )
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -70,6 +72,9 @@ DEFAULT_WINDOW_SIZE = QSize(920, 640)
 DEFAULT_DOCUMENT_TEXT = "Cost: $20 + 56 EUR\nDiscounted: prev - 5% off\n\n1 meter 20 cm in cm\nround(1 month in days)"
 SHOW_COMPLETIONS_SHORTCUTS = [QKeySequence("Meta+Space" if sys.platform == "darwin" else "Ctrl+Space")]
 CLIPBOARD_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'\u2018\u2019](?=\d{3}(?:\D|$))")
+RESULT_COLUMN_LEFT_PADDING = 8
+RESULT_COLUMN_RIGHT_PADDING = 22
+MIN_RESULT_COLUMN_WIDTH = 56
 
 
 def is_show_completions_shortcut(event: QKeyEvent) -> bool:
@@ -202,9 +207,25 @@ class ResultPane(StripedPlainTextEdit):
         self._hovered_result_line: int | None = None
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setObjectName("resultPane")
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
+        self.setWordWrapMode(QTextOption.WrapMode.NoWrap)
+        option = self.document().defaultTextOption()
+        option.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.document().setDefaultTextOption(option)
+
+    def content_width(self, lines: list[str]) -> int:
+        text_width = max((self.fontMetrics().horizontalAdvance(line) for line in lines if line), default=0)
+        document_margin_width = ceil(self.document().documentMargin() * 2)
+        result_padding = RESULT_COLUMN_LEFT_PADDING + RESULT_COLUMN_RIGHT_PADDING
+        return max(MIN_RESULT_COLUMN_WIDTH, text_width + result_padding + document_margin_width)
+
+    def fit_to_content(self, lines: list[str]) -> None:
+        width = self.content_width(lines)
+        self.setMinimumWidth(width)
+        self.setMaximumWidth(width)
 
     def set_theme(self, theme: EditorTheme) -> None:
         self.theme = theme
@@ -272,11 +293,12 @@ class ResultPane(StripedPlainTextEdit):
             return None
         block = self.document().findBlockByNumber(line)
         cursor = QTextCursor(block)
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
         cursor_rect = self.cursorRect(cursor)
         width = self.fontMetrics().horizontalAdvance(text)
         height = max(cursor_rect.height(), self.fontMetrics().height())
-        left = max(0, cursor_rect.x() - 8)
-        right = cursor_rect.x() + width + 8
+        right = min(self.viewport().width(), cursor_rect.x() + 8)
+        left = max(0, right - width - 16)
         return QRectF(left, cursor_rect.y() + 1, max(1, right - left), max(1, height - 2))
 
     def _result_text_for_line(self, line: int | None) -> str:
@@ -713,7 +735,12 @@ class MainWindow(QMainWindow):
                 selection-color: {theme.selection_text.name()};
             }}
             QPlainTextEdit > QWidget {{ background: transparent; }}
-            #resultPane {{ color: {theme.result_text.name()}; background: transparent; }}
+            #resultPane {{
+                color: {theme.result_text.name()};
+                background: transparent;
+                padding-left: {RESULT_COLUMN_LEFT_PADDING}px;
+                padding-right: {RESULT_COLUMN_RIGHT_PADDING}px;
+            }}
             QMenuBar {{ background: {theme.document_background.name()}; color: {theme.editor_text.name()}; }}
             QSplitter::handle {{ background: {theme.document_background.name()}; }}
             """
@@ -742,6 +769,7 @@ class MainWindow(QMainWindow):
     def recalculate(self) -> None:
         document = evaluate_document(self.editor.toPlainText(), {"decimal_places": self.result_decimal_places})
         self.results.setPlainText("\n".join(document.displays))
+        self.results.fit_to_content(document.displays)
         self.results.update_alternating_row_backgrounds()
         self.document_surface.update()
         self._sync_scrollbar_range(self.editor.verticalScrollBar().minimum(), self.editor.verticalScrollBar().maximum())

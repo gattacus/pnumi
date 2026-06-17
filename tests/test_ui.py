@@ -460,8 +460,42 @@ def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:
     assert _format_color_at(third_line_formats, 13) == KEYWORD_HIGHLIGHT_COLOR
 
 
+def test_conversion_keywords_are_highlighted(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText("10 USD to EUR\n10 USD in EUR\n10 USD into EUR\n10 USD as EUR")
+    editor.highlighter.rehighlight()
+
+    # Get formatting for each line
+    block = editor.document().firstBlock()
+
+    # line 1: 10 USD to EUR
+    # "to" starts at index 7, length 2
+    formats_to = block.layout().formats()
+    assert _format_color_at(formats_to, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 2: 10 USD in EUR
+    # "in" starts at index 7, length 2
+    block = block.next()
+    formats_in = block.layout().formats()
+    assert _format_color_at(formats_in, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 3: 10 USD into EUR
+    # "into" starts at index 7, length 4
+    block = block.next()
+    formats_into = block.layout().formats()
+    assert _format_color_at(formats_into, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 4: 10 USD as EUR
+    # "as" starts at index 7, length 2
+    block = block.next()
+    formats_as = block.layout().formats()
+    assert _format_color_at(formats_as, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+
 def _format_color_at(formats, index: int) -> QColor | None:
     for item in formats:
         if item.start <= index < item.start + item.length:
             return item.format.foreground().color()
     return None
+

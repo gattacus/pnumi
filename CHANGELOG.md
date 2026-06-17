@@ -4,17 +4,30 @@
 
 ### Added
 
+- Multi-sheet tabs with session persistence and reorderable calculation sheets.
+- Windows platform support, including a PowerShell build script, a dedicated
+  Windows icon asset, and GitHub Actions release automation for Windows builds.
+- Parentheses handling in expression evaluation.
 - Typed arithmetic for units, currencies, and percentages.
-- Yahoo Finance-backed currency rates and expanded currency parsing.
+- Yahoo Finance-backed currency rates and expanded currency parsing using the
+  `yfinance` package.
 - System theme mode, an About dialog, and bundled macOS app icon support.
 - Ruff linting configuration and an MIT license.
+- A VS Code launch configuration for development.
 
 ### Changed
 
-- Improved aggregate calculations, including mixed-currency totals converted to a target currency.
+- Improved aggregate calculations, including mixed-currency totals converted to
+  a target currency.
 - Refined result pane layout and right-aligned result rendering.
 - Made the autocomplete shortcut platform-aware.
-- Updated release automation to publish notes from the matching changelog entry.
+- Updated release automation to publish notes from the matching changelog
+  entry.
+
+### Fixed
+
+- Fixed the 'Surround with Parentheses' shortcut on Windows to support
+  `Ctrl+Shift+9` and `Ctrl+Shift+0`.
 
 ## 0.1.0 - 2026-06-16
 

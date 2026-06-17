@@ -49,6 +49,16 @@ VALUE_TOKEN_RE = re.compile(
     rf"(?P<prefix>{CURRENCY_SIGN_PATTERN})?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>%|{CURRENCY_SIGN_PATTERN}|[A-Za-z°][A-Za-z0-9°]*(?:\s+[A-Za-z°][A-Za-z0-9°]*){{0,2}}(?:\s*/\s*[A-Za-z°][A-Za-z0-9°]*)*)?"
 )
 
+RESERVED_NAMES = {
+    # Core keywords
+    "prev", "sum", "total", "average", "avg", "today", "now",
+    # Constants
+    "pi", "e",
+    # Functions
+    "sqrt", "cbrt", "abs", "ln", "log", "fact", "round", "ceil", "floor", "root", "fromunix",
+    "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh"
+}
+
 
 def evaluate_document(text: str, options: dict | None = None) -> DocumentResult:
     context = DocumentContext(rate_provider=(options or {}).get("rate_provider") if options else None)
@@ -84,6 +94,8 @@ def evaluate_line(text: str, context: DocumentContext | None = None) -> LineResu
         target_name = assignment.group(1)
         expression = assignment.group(2)
     try:
+        if target_name and target_name.lower() in RESERVED_NAMES:
+            raise ValueError(f"Cannot assign to reserved keyword '{target_name}'")
         value, scientific = _evaluate_expression(expression, context)
         if target_name:
             context.variables[target_name] = value

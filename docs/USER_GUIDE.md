@@ -136,6 +136,10 @@ total_earnings = hourly_rate * hours_worked # 2'000 EUR
 
 If you redefine a variable, subsequent lines will use the updated value.
 
+> [!IMPORTANT]
+> **Reserved Names**: You cannot assign values to core keywords (`prev`, `sum`, `total`, `average`, `avg`, `today`, `now`), math constants (`pi`, `e`), or built-in functions (such as `sqrt`, `round`, `sin`, `fromunix`). Attempting to do so (e.g. `prev = 5`) will raise a validation error.
+
+
 ### The prev Keyword
 
 The `prev` keyword acts as a special variable that references the result of the immediately preceding calculated line. This is useful for chain calculations without naming intermediate results:

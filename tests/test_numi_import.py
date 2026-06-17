@@ -34,7 +34,7 @@ def test_normalize_numi_import_strips_verified_exported_results() -> None:
 
 
 def test_normalize_numi_import_matches_numi_grouped_results() -> None:
-    assert normalize_numi_import("total = 1700 + 1 = 1\u2019701") == "total = 1700 + 1"
+    assert normalize_numi_import("my_total = 1700 + 1 = 1\u2019701") == "my_total = 1700 + 1"
 
 
 def test_normalize_numi_import_keeps_unverified_equals_text() -> None:

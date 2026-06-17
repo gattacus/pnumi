@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QIcon,
     QKeyEvent,
     QKeySequence,
+    QMouseEvent,
     QPainter,
     QPixmap,
     QSyntaxHighlighter,
@@ -58,14 +59,16 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabBar,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 from shiboken6 import isValid
 
 from .currencies import CURRENCY_ALIASES, CURRENCY_CODES
-from .engine import TIMEZONES, evaluate_document
+from .engine import RESERVED_NAMES, TIMEZONES, evaluate_document
 from .formatting import DEFAULT_DECIMAL_PLACES
+from .models import LineResult
 from .numi_import import normalize_numi_import
 from .rates import default_rate_provider
 from .units import ALIASES as UNIT_ALIASES
@@ -223,10 +226,30 @@ class DocumentSurface(QWidget):
             block = block.next()
 
 
+class ResultHighlighter(QSyntaxHighlighter):
+    def __init__(self, document) -> None:
+        super().__init__(document)
+        self.error_format = QTextCharFormat()
+        self.error_format.setForeground(QColor("#ef4444"))
+
+    def set_theme(self, theme: EditorTheme) -> None:
+        if theme == LIGHT_THEME:
+            self.error_format.setForeground(QColor("#ef4444"))
+        else:
+            self.error_format.setForeground(QColor("#f87171"))
+        self.rehighlight()
+
+    def highlightBlock(self, text: str) -> None:
+        if text.startswith("Error:"):
+            self.setFormat(0, len(text), self.error_format)
+
+
 class ResultPane(StripedPlainTextEdit):
     def __init__(self) -> None:
         super().__init__()
         self.theme = LIGHT_THEME
+        self.highlighter = ResultHighlighter(self.document())
+        self.highlighter.set_theme(self.theme)
         self._hovered_result_line: int | None = None
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -252,6 +275,7 @@ class ResultPane(StripedPlainTextEdit):
 
     def set_theme(self, theme: EditorTheme) -> None:
         self.theme = theme
+        self.highlighter.set_theme(theme)
         self.viewport().update()
 
     def result_at_position(self, position: QPoint) -> str:
@@ -282,7 +306,7 @@ class ResultPane(StripedPlainTextEdit):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             result = self.result_at_position(event.position().toPoint())
-            if result:
+            if result and not result.startswith("Error:"):
                 QApplication.clipboard().setText(_clipboard_result_text(result))
                 event.accept()
                 return
@@ -309,6 +333,9 @@ class ResultPane(StripedPlainTextEdit):
         line = cursor.blockNumber()
         rect = self._result_pill_rect(line)
         if rect is None or not rect.contains(position):
+            return None
+        text = self._result_text_for_line(line)
+        if text.startswith("Error:"):
             return None
         return line
 
@@ -342,12 +369,16 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
         self.variable_format.setForeground(VARIABLE_HIGHLIGHT_COLOR)
         self.keyword_format = QTextCharFormat()
         self.keyword_format.setForeground(KEYWORD_HIGHLIGHT_COLOR)
+        self.warning_format = QTextCharFormat()
+        self.warning_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+        self.warning_format.setUnderlineColor(QColor("red"))
         self._variable_words: list[str] = []
 
     def set_theme(self, theme: EditorTheme) -> None:
         self.comment_format.setForeground(theme.comment)
         self.variable_format.setForeground(theme.variable)
         self.keyword_format.setForeground(theme.keyword)
+        self.warning_format.setForeground(theme.variable)
         self.rehighlight()
 
     def set_variable_words(self, words: list[str]) -> None:
@@ -359,10 +390,13 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
             self.setFormat(match.start(), match.end() - match.start(), self.keyword_format)
         for word in self._variable_words:
             for match in re.finditer(rf"\b{re.escape(word)}\b", text):
-                self.setFormat(match.start(), match.end() - match.start(), self.variable_format)
+                fmt = self.warning_format if word.lower() in TIER2_NAMES else self.variable_format
+                self.setFormat(match.start(), match.end() - match.start(), fmt)
         assignment = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", text)
         if assignment:
-            self.setFormat(assignment.start(1), assignment.end(1) - assignment.start(1), self.variable_format)
+            var_name = assignment.group(1)
+            fmt = self.warning_format if var_name.lower() in TIER2_NAMES else self.variable_format
+            self.setFormat(assignment.start(1), assignment.end(1) - assignment.start(1), fmt)
         stripped = text.lstrip()
         leading_spaces = len(text) - len(stripped)
         if stripped.startswith("#") or stripped.startswith("//"):
@@ -514,7 +548,7 @@ class EvaluationWorker(QRunnable):
                     "rate_provider": default_rate_provider(),
                 },
             )
-            self.signals.finished.emit(self.revision, self.text, document.displays, "")
+            self.signals.finished.emit(self.revision, self.text, document.line_results, "")
         except Exception as exc:
             self.signals.finished.emit(self.revision, self.text, [], str(exc))
 
@@ -602,10 +636,19 @@ HIGHLIGHT_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+TIER2_NAMES = {
+    *(word.lower() for word in UNIT_ALIASES.keys()),
+    *(word.lower() for word in CURRENCY_ALIASES.keys()),
+    *(word.lower() for word in CURRENCY_CODES)
+} - RESERVED_NAMES
+
 
 class CompletionTextEdit(StripedPlainTextEdit):
     def __init__(self) -> None:
         super().__init__()
+        self._line_errors: dict[int, str] = {}
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         self._static_words = STATIC_COMPLETIONS
         self._dynamic_words: list[str] = []
         self.highlighter = CommentMarkdownHighlighter(self.document())
@@ -676,6 +719,35 @@ class CompletionTextEdit(StripedPlainTextEdit):
         rect = self.cursorRect()
         rect.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width() + 24)
         self.completer.complete(rect)
+
+    def set_line_errors(self, errors: dict[int, str]) -> None:
+        self._line_errors = errors
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        pos = event.position().toPoint()
+        cursor = self.cursorForPosition(pos)
+        line = cursor.blockNumber()
+        if line in self._line_errors:
+            QToolTip.showText(event.globalPosition().toPoint(), self._line_errors[line], self.viewport())
+            super().mouseMoveEvent(event)
+            return
+
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        word = cursor.selectedText()
+        if word and word.lower() in TIER2_NAMES and word in self._dynamic_words:
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                f"Warning: '{word}' shadows a built-in unit or currency",
+                self.viewport(),
+            )
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
 
 
 class Sheet(QWidget):
@@ -1279,18 +1351,31 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return
         if revision == self._evaluation_revision and text == current_text:
-            result_displays = displays if isinstance(displays, list) else []
+            line_results = displays if isinstance(displays, list) else []
             if error:
-                result_displays = ["" for _ in text.splitlines()]
-            self._apply_evaluation_results(result_displays)
+                line_results = []
+            self._apply_evaluation_results(line_results)
         self._start_pending_evaluation()
 
-    def _apply_evaluation_results(self, displays: list[str]) -> None:
+    def _apply_evaluation_results(self, line_results: list[LineResult]) -> None:
         if not self.results:
             return
+        displays = []
+        line_errors = {}
+        for idx, line in enumerate(line_results):
+            if line.diagnostics:
+                displays.append(f"Error: {line.diagnostics[0]}")
+                line_errors[idx] = line.diagnostics[0]
+            else:
+                displays.append(line.display)
+        if not line_results and self.editor:
+            displays = ["" for _ in self.editor.toPlainText().splitlines()]
+
         self.results.setPlainText("\n".join(displays))
         self.results.fit_to_content(displays)
         self.results.update_alternating_row_backgrounds()
+        if self.editor:
+            self.editor.set_line_errors(line_errors)
         if self.document_surface:
             self.document_surface.update()
         if self.current_sheet:
@@ -1419,7 +1504,10 @@ class MainWindow(QMainWindow):
         return lines[line] if line < len(lines) else ""
 
     def copy_current_result(self) -> None:
-        QApplication.clipboard().setText(_clipboard_result_text(self.current_result_text()))
+        text = self.current_result_text()
+        if text.startswith("Error:"):
+            text = ""
+        QApplication.clipboard().setText(_clipboard_result_text(text))
 
     def copy_all(self) -> None:
         if not self.editor or not self.results:
@@ -1429,6 +1517,8 @@ class MainWindow(QMainWindow):
         rows = []
         for index, line in enumerate(source):
             result = _clipboard_result_text(results[index]) if index < len(results) else ""
+            if result.startswith("Error:"):
+                result = ""
             rows.append(f"{line}\t{result}" if result else line)
         QApplication.clipboard().setText("\n".join(rows))
 

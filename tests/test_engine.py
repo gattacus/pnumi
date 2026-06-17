@@ -417,3 +417,36 @@ def test_bitwise_operations() -> None:
     assert evaluate_line("2 ^ 3", ctx).display == "8"
 
 
+def test_reserved_keyword_assignments_fail() -> None:
+    ctx = context()
+    # Core keywords
+    res = evaluate_line("prev = 5", ctx)
+    assert not res.ok
+    assert "Cannot assign to reserved keyword 'prev'" in res.diagnostics
+
+    res = evaluate_line("sum = 100", ctx)
+    assert not res.ok
+    assert "Cannot assign to reserved keyword 'sum'" in res.diagnostics
+
+    # Case insensitivity
+    res = evaluate_line("PREV = 5", ctx)
+    assert not res.ok
+    assert "Cannot assign to reserved keyword 'PREV'" in res.diagnostics
+
+    # Constants & Functions
+    res = evaluate_line("pi = 4", ctx)
+    assert not res.ok
+    assert "Cannot assign to reserved keyword 'pi'" in res.diagnostics
+
+    res = evaluate_line("sqrt = 9", ctx)
+    assert not res.ok
+    assert "Cannot assign to reserved keyword 'sqrt'" in res.diagnostics
+
+    # Regular assignment should still work
+    res = evaluate_line("my_var = 10", ctx)
+    assert res.ok
+    assert res.display == "10"
+    assert ctx.variables["my_var"].magnitude == Decimal("10")
+
+
+

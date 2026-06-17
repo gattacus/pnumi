@@ -9,6 +9,8 @@
 - A configuration setting to adjust the editor and results font size, with persistence across sessions.
 - An extensive end-user guide (`docs/USER_GUIDE.md`) detailing calculations, units, currencies, mathematical functions, dates, times, and keyboard shortcuts.
 - Automated tests (`tests/test_user_guide.py`) that verify guide examples against the evaluation engine.
+- Prohibited variable assignments to reserved keyword names (e.g. `prev`, `sum`, `pi`), displaying detailed inline error messages in red and editor hover tooltips.
+- A warning system (red squiggly underlines and hover tooltips) for variables that shadow built-in units or currencies (e.g. `m = 5`).
 
 ### Fixed
 

@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication
 
 from pnumi.rates import StaticRateProvider
@@ -76,7 +76,9 @@ def test_recalculation_does_not_block_ui_thread(qtbot, tmp_path, monkeypatch) ->
     def slow_evaluate_document(text: str, options=None):
         started.set()
         release.wait(timeout=5)
-        return SimpleNamespace(displays=[f"{text} result"])
+        return SimpleNamespace(
+            line_results=[SimpleNamespace(display=f"{text} result", diagnostics=[])]
+        )
 
     monkeypatch.setattr("pnumi.ui.evaluate_document", slow_evaluate_document)
     window.editor.setPlainText("slow")
@@ -482,6 +484,26 @@ def test_variables_and_keywords_use_distinct_high_contrast_colors(qtbot) -> None
     assert _format_color_at(first_line_formats, 11) == KEYWORD_HIGHLIGHT_COLOR
     assert _format_color_at(second_line_formats, 0) == VARIABLE_HIGHLIGHT_COLOR
     assert _format_color_at(second_line_formats, 11) == KEYWORD_HIGHLIGHT_COLOR
+
+
+def test_tier2_variable_warning_highlight(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText("m = 5\n10 + m")
+    editor.set_dynamic_words(["m"])
+    editor.highlighter.rehighlight()
+
+    first_line_formats = editor.document().firstBlock().layout().formats()
+    second_line_formats = editor.document().firstBlock().next().layout().formats()
+
+    # The warning format should have SpellCheckUnderline style
+    fmt_item_1 = next(item for item in first_line_formats if item.start <= 0 < item.start + item.length)
+    assert fmt_item_1.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
+    assert fmt_item_1.format.underlineColor() == QColor("red")
+
+    fmt_item_2 = next(item for item in second_line_formats if item.start <= 5 < item.start + item.length)
+    assert fmt_item_2.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
+    assert fmt_item_2.format.underlineColor() == QColor("red")
 
 
 def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:

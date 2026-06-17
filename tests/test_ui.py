@@ -20,6 +20,7 @@ from pnumi.ui import (
     DARK_MODE_KEY,
     DARK_THEME,
     DEFAULT_DOCUMENT_TEXT,
+    FONT_SIZE_KEY,
     KEYWORD_HIGHLIGHT_COLOR,
     LAST_CONTENT_KEY,
     LIGHT_THEME,
@@ -388,20 +389,48 @@ def test_editor_and_results_share_one_visible_vertical_scrollbar(qtbot, tmp_path
 
 
 def test_settings_dialog_exposes_display_settings(qtbot) -> None:
-    dialog = SettingsDialog(False, THEME_MODE_SYSTEM, 4)
+    dialog = SettingsDialog(False, THEME_MODE_SYSTEM, 4, 16)
     qtbot.addWidget(dialog)
 
     assert not dialog.alternating_row_background_enabled()
     assert dialog.theme_mode() == THEME_MODE_SYSTEM
     assert not dialog.dark_mode_enabled()
     assert dialog.result_decimal_places() == 4
+    assert dialog.font_size() == 16
     dialog.alternating_row_background_checkbox.setChecked(True)
     dialog.theme_mode_combo.setCurrentIndex(dialog.theme_mode_combo.findData(THEME_MODE_DARK))
     dialog.result_decimal_places_spinbox.setValue(6)
+    dialog.font_size_spinbox.setValue(20)
     assert dialog.alternating_row_background_enabled()
     assert dialog.theme_mode() == THEME_MODE_DARK
     assert dialog.dark_mode_enabled()
     assert dialog.result_decimal_places() == 6
+    assert dialog.font_size() == 20
+
+
+def test_font_size_setting_is_persisted_and_applied(qtbot, tmp_path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+
+    assert window.font_size == 14
+    assert window.editor.font().pointSize() == 14
+    assert window.results.font().pointSize() == 14
+
+    window.set_font_size(18)
+    assert window.font_size == 18
+    assert window.editor.font().pointSize() == 18
+    assert window.results.font().pointSize() == 18
+    assert window.settings.value(FONT_SIZE_KEY) == 18
+
+    settings.sync()
+
+    reloaded = MainWindow(settings=QSettings(str(settings_path), QSettings.Format.IniFormat))
+    qtbot.addWidget(reloaded)
+    assert reloaded.font_size == 18
+    assert reloaded.editor.font().pointSize() == 18
+    assert reloaded.results.font().pointSize() == 18
 
 
 def test_about_dialog_shows_app_identity_and_icon(qtbot) -> None:
@@ -514,6 +543,7 @@ def _format_color_at(formats, index: int) -> QColor | None:
 
 def test_add_and_close_tab(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
 
     window = _window_with_test_settings(qtbot, tmp_path)
@@ -535,12 +565,14 @@ def test_add_and_close_tab(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_close_tab_confirmation_yes(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.add_new_empty_tab()
     window.stacked_widget.widget(1).editor.setPlainText("some content")
     assert window.stacked_widget.count() == 2
 
     question_called = False
+
     def mock_question(parent, title, text, buttons, defaultButton):
         nonlocal question_called
         question_called = True
@@ -555,12 +587,14 @@ def test_close_tab_confirmation_yes(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_close_tab_confirmation_no(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.add_new_empty_tab()
     window.stacked_widget.widget(1).editor.setPlainText("some content")
     assert window.stacked_widget.count() == 2
 
     question_called = False
+
     def mock_question(parent, title, text, buttons, defaultButton):
         nonlocal question_called
         question_called = True
@@ -575,11 +609,13 @@ def test_close_tab_confirmation_no(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_close_empty_tab_no_confirmation(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.add_new_empty_tab()
     assert window.stacked_widget.count() == 2
 
     question_called = False
+
     def mock_question(*args, **kwargs):
         nonlocal question_called
         question_called = True
@@ -594,11 +630,13 @@ def test_close_empty_tab_no_confirmation(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_close_tab_confirmation_on_last_tab_yes(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("some text")
     assert window.stacked_widget.count() == 1
 
     question_called = False
+
     def mock_question(*args, **kwargs):
         nonlocal question_called
         question_called = True
@@ -614,11 +652,13 @@ def test_close_tab_confirmation_on_last_tab_yes(qtbot, tmp_path, monkeypatch) ->
 
 def test_close_tab_confirmation_on_last_tab_no(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("some text")
     assert window.stacked_widget.count() == 1
 
     question_called = False
+
     def mock_question(*args, **kwargs):
         nonlocal question_called
         question_called = True
@@ -673,6 +713,7 @@ def test_tab_persistence(qtbot, tmp_path) -> None:
 
 def test_close_last_tab_resets(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
 
     window = _window_with_test_settings(qtbot, tmp_path)
@@ -714,6 +755,7 @@ def test_reorder_tabs_keeps_titles(qtbot, tmp_path) -> None:
 
 def test_tab_middle_click_closes_tab(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
 
     window = _window_with_test_settings(qtbot, tmp_path)
@@ -732,6 +774,7 @@ def test_tab_middle_click_closes_tab(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_tab_middle_click_cancel(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
 
     window = _window_with_test_settings(qtbot, tmp_path)
@@ -750,7 +793,9 @@ def test_tab_middle_click_cancel(qtbot, tmp_path, monkeypatch) -> None:
 
 def test_tab_middle_click_empty_no_confirmation(qtbot, tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QMessageBox
+
     question_called = False
+
     def mock_question(*args, **kwargs):
         nonlocal question_called
         question_called = True
@@ -770,4 +815,3 @@ def test_tab_middle_click_empty_no_confirmation(qtbot, tmp_path, monkeypatch) ->
     # Should have closed the second tab without triggering confirmation
     assert not question_called
     assert window.stacked_widget.count() == 1
-

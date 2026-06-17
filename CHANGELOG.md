@@ -6,6 +6,7 @@
 
 - A confirmation dialog before closing a tab (bypassed if the sheet is empty).
 - Support for closing tabs by middle-clicking on them in the tab bar.
+- A configuration setting to adjust the editor and results font size, with persistence across sessions.
 - An extensive end-user guide (`docs/USER_GUIDE.md`) detailing calculations, units, currencies, mathematical functions, dates, times, and keyboard shortcuts.
 - Automated tests (`tests/test_user_guide.py`) that verify guide examples against the evaluation engine.
 

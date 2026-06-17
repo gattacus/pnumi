@@ -492,3 +492,8 @@ Pnumi supports standard desktop keyboard shortcuts for editor control and layout
 - **Tab Close Confirmation**: Closing a non-empty tab prompts a confirmation dialog to prevent accidental data loss.
 - **Rename Tabs**: Double-click a tab's title to rename it.
 - **Section Boundaries**: Section results are reset by blank lines, allowing separate `sum` and `avg` scopes in the same sheet.
+- **Customizable Settings**: Access settings (`Cmd + ,` or from Edit menu) to configure:
+  - **Font Size**: Configure the font size of the calculation editor and results pane.
+  - **Alternating Row Background**: Toggle the striped row background.
+  - **Theme**: Choose between Light, Dark, or system-matching themes.
+  - **Result Decimal Places**: Set the maximum number of decimal places for calculated results.

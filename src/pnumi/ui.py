@@ -84,6 +84,8 @@ THEME_MODE_DARK = "dark"
 THEME_MODES = {THEME_MODE_SYSTEM, THEME_MODE_LIGHT, THEME_MODE_DARK}
 LAST_CONTENT_KEY = "editor/lastContent"
 RESULT_DECIMAL_PLACES_KEY = "results/decimalPlaces"
+FONT_SIZE_KEY = "editor/fontSize"
+DEFAULT_FONT_SIZE = 14
 WINDOW_SIZE_KEY = "window/size"
 SETTINGS_ORGANIZATION = "gattacus.uk"
 SETTINGS_ORGANIZATION_DOMAIN = "uk.gattacus"
@@ -264,7 +266,9 @@ class ResultPane(StripedPlainTextEdit):
         line = self._result_line_at_position(event.position().toPoint())
         if line != self._hovered_result_line:
             self._hovered_result_line = line
-            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if line is not None else Qt.CursorShape.IBeamCursor)
+            self.viewport().setCursor(
+                Qt.CursorShape.PointingHandCursor if line is not None else Qt.CursorShape.IBeamCursor
+            )
             self.viewport().update()
         super().mouseMoveEvent(event)
 
@@ -375,6 +379,7 @@ class SettingsDialog(QDialog):
         alternating_row_background: bool,
         theme_mode: str | bool,
         result_decimal_places: int = DEFAULT_DECIMAL_PLACES,
+        font_size: int = DEFAULT_FONT_SIZE,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -402,6 +407,15 @@ class SettingsDialog(QDialog):
         decimal_places_layout.addWidget(QLabel("Result decimal places"))
         decimal_places_layout.addWidget(self.result_decimal_places_spinbox)
         decimal_places_layout.addStretch(1)
+        self.font_size_spinbox = QSpinBox()
+        self.font_size_spinbox.setRange(8, 72)
+        self.font_size_spinbox.setValue(font_size)
+        font_size_row = QWidget()
+        font_size_layout = QHBoxLayout(font_size_row)
+        font_size_layout.setContentsMargins(0, 0, 0, 0)
+        font_size_layout.addWidget(QLabel("Font size"))
+        font_size_layout.addWidget(self.font_size_spinbox)
+        font_size_layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -410,6 +424,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.alternating_row_background_checkbox)
         layout.addWidget(theme_mode_row)
         layout.addWidget(decimal_places_row)
+        layout.addWidget(font_size_row)
         layout.addWidget(buttons)
 
     def alternating_row_background_enabled(self) -> bool:
@@ -423,6 +438,9 @@ class SettingsDialog(QDialog):
 
     def result_decimal_places(self) -> int:
         return self.result_decimal_places_spinbox.value()
+
+    def font_size(self) -> int:
+        return self.font_size_spinbox.value()
 
 
 class AboutDialog(QDialog):
@@ -661,7 +679,14 @@ class CompletionTextEdit(StripedPlainTextEdit):
 
 
 class Sheet(QWidget):
-    def __init__(self, settings: QSettings, parent: QWidget | None = None, content: str = "", path: Path | None = None, title: str = "") -> None:
+    def __init__(
+        self,
+        settings: QSettings,
+        parent: QWidget | None = None,
+        content: str = "",
+        path: Path | None = None,
+        title: str = "",
+    ) -> None:
         super().__init__(parent)
         self.settings = settings
         self.current_path = path
@@ -677,7 +702,8 @@ class Sheet(QWidget):
 
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setPointSize(14)
+        font_size = _settings_int(settings, FONT_SIZE_KEY, DEFAULT_FONT_SIZE, minimum=8, maximum=72)
+        font.setPointSize(font_size)
         self.editor.setFont(font)
         self.results.setFont(font)
 
@@ -747,7 +773,10 @@ class MainWindow(QMainWindow):
         self.alternating_row_background = _settings_bool(self.settings, ALTERNATING_ROW_BACKGROUND_KEY, True)
         self.theme_mode = _settings_theme_mode(self.settings)
         self.dark_mode = False
-        self.result_decimal_places = _settings_int(self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20)
+        self.result_decimal_places = _settings_int(
+            self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20
+        )
+        self.font_size = _settings_int(self.settings, FONT_SIZE_KEY, DEFAULT_FONT_SIZE, minimum=8, maximum=72)
         self._loading_window_state = True
         self._loading_content = True
         self._evaluation_pool = QThreadPool(self)
@@ -885,7 +914,7 @@ class MainWindow(QMainWindow):
         sheet.editor.textChanged.connect(self._save_tabs_state)
 
         self.stacked_widget.addWidget(sheet)
-        index = self.tab_bar.addTab("") # Title set by _update_tab_titles
+        index = self.tab_bar.addTab("")  # Title set by _update_tab_titles
 
         # Add custom close button to override low-contrast OS defaults on macOS/etc.
         btn = QToolButton()
@@ -966,9 +995,7 @@ class MainWindow(QMainWindow):
         if 0 <= index < self.tab_bar.count():
             sheet = self.stacked_widget.widget(index)
             current_title = sheet.custom_title
-            new_title, ok = QInputDialog.getText(
-                self, "Rename Sheet", "Enter new name:", text=current_title
-            )
+            new_title, ok = QInputDialog.getText(self, "Rename Sheet", "Enter new name:", text=current_title)
             if ok and new_title.strip():
                 sheet.custom_title = new_title.strip()
                 self._update_tab_titles()
@@ -1230,13 +1257,17 @@ class MainWindow(QMainWindow):
         worker = EvaluationWorker(revision, text, decimal_places)
         self._evaluation_workers.add(worker)
 
-        def handle_finished(revision: int, text: str, displays: object, error: str, *, worker: EvaluationWorker = worker) -> None:
+        def handle_finished(
+            revision: int, text: str, displays: object, error: str, *, worker: EvaluationWorker = worker
+        ) -> None:
             self._handle_evaluation_finished(worker, revision, text, displays, error)
 
         worker.signals.finished.connect(handle_finished)
         self._evaluation_pool.start(worker)
 
-    def _handle_evaluation_finished(self, worker: EvaluationWorker, revision: int, text: str, displays: object, error: str) -> None:
+    def _handle_evaluation_finished(
+        self, worker: EvaluationWorker, revision: int, text: str, displays: object, error: str
+    ) -> None:
         self._evaluation_workers.discard(worker)
         self._active_evaluations = max(0, self._active_evaluations - 1)
         if not isValid(self):
@@ -1305,6 +1336,11 @@ class MainWindow(QMainWindow):
             sheet.editor.set_alternating_row_background_enabled(self.alternating_row_background)
             sheet.results.set_alternating_row_background_enabled(self.alternating_row_background)
             sheet.document_surface.set_alternating_row_background_enabled(self.alternating_row_background)
+            font = sheet.editor.font()
+            font.setPointSize(self.font_size)
+            sheet.editor.setFont(font)
+            sheet.results.setFont(font)
+            sheet.results.fit_to_content(sheet.results.toPlainText().splitlines())
         self._apply_style()
 
     def set_alternating_row_background(self, enabled: bool) -> None:
@@ -1326,12 +1362,24 @@ class MainWindow(QMainWindow):
         self.settings.setValue(RESULT_DECIMAL_PLACES_KEY, self.result_decimal_places)
         self.recalculate()
 
+    def set_font_size(self, size: int) -> None:
+        self.font_size = max(8, min(int(size), 72))
+        self.settings.setValue(FONT_SIZE_KEY, self.font_size)
+        self.apply_settings()
+
     def open_settings_dialog(self) -> None:
-        dialog = SettingsDialog(self.alternating_row_background, self.theme_mode, self.result_decimal_places, self)
+        dialog = SettingsDialog(
+            self.alternating_row_background,
+            self.theme_mode,
+            self.result_decimal_places,
+            self.font_size,
+            self,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_alternating_row_background(dialog.alternating_row_background_enabled())
             self.set_theme_mode(dialog.theme_mode())
             self.set_result_decimal_places(dialog.result_decimal_places())
+            self.set_font_size(dialog.font_size())
 
     def open_about_dialog(self) -> None:
         AboutDialog(self).exec()
@@ -1394,7 +1442,9 @@ class MainWindow(QMainWindow):
         cursor.insertText(f"({text})")
 
     def import_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import", "", "Numi files (*.numi);;Text files (*.txt);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import", "", "Numi files (*.numi);;Text files (*.txt);;All files (*)"
+        )
         if not path:
             return
         self.current_path = Path(path)
@@ -1405,7 +1455,9 @@ class MainWindow(QMainWindow):
         if not self.editor:
             return
         start = str(self.current_path) if self.current_path else "Untitled.numi"
-        path, _ = QFileDialog.getSaveFileName(self, "Export", start, "Numi files (*.numi);;Text files (*.txt);;All files (*)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export", start, "Numi files (*.numi);;Text files (*.txt);;All files (*)"
+        )
         if not path:
             return
         target = Path(path)

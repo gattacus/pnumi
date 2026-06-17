@@ -122,7 +122,9 @@ class YahooFinanceRateProvider(RateProvider):
         return _last_close(history)
 
     def _historical_price(self, ticker: Any, at: date) -> Any | None:
-        history = ticker.history(start=at.isoformat(), end=(at + timedelta(days=1)).isoformat(), interval="1d", auto_adjust=False)
+        history = ticker.history(
+            start=at.isoformat(), end=(at + timedelta(days=1)).isoformat(), interval="1d", auto_adjust=False
+        )
         return _last_close(history)
 
 
@@ -183,18 +185,5 @@ class CompositeRateProvider(RateProvider):
         raise LookupError(f"No rate for {base}/{quote}") from failures[-1][1] if failures else None
 
 
-def fallback_rate_provider() -> RateProvider:
-    return StaticRateProvider(
-        {
-            ("USD", "EUR"): Decimal("0.92"),
-            ("USD", "CAD"): Decimal("1.35"),
-            ("USD", "GBP"): Decimal("0.79"),
-            ("USD", "CHF"): Decimal("0.89"),
-            ("BTC", "USD"): Decimal("65000"),
-            ("ETH", "USD"): Decimal("3500"),
-        }
-    )
-
-
 def default_rate_provider() -> RateProvider:
-    return CompositeRateProvider([YahooFinanceRateProvider(), fallback_rate_provider()], warn_on_fallback=True)
+    return YahooFinanceRateProvider()

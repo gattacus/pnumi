@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QTextCursor
+from PySide6.QtGui import QAction, QColor, QTextCursor, QKeySequence
 from PySide6.QtWidgets import QApplication
 
 from pnumi.rates import StaticRateProvider
@@ -181,6 +181,18 @@ def test_autocomplete_can_be_opened_by_action(qtbot, tmp_path) -> None:
 
     assert action is not None
     assert action.shortcuts() == SHOW_COMPLETIONS_SHORTCUTS
+
+
+def test_surround_with_parentheses_shortcut(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+
+    action = window.findChild(QAction, "surroundAction")
+
+    assert action is not None
+    if sys.platform == "win32":
+        assert action.shortcuts() == [QKeySequence("Ctrl+Shift+9"), QKeySequence("Ctrl+Shift+0")]
+    else:
+        assert action.shortcut() == QKeySequence("Ctrl+Shift+0")
 
 
 def test_open_completion_popup_uses_current_word(qtbot) -> None:

@@ -748,7 +748,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(delete_all_action)
 
         surround_action = QAction("Surround with &Parentheses", self)
-        surround_action.setShortcut(QKeySequence("Ctrl+Shift+0"))
+        surround_action.setObjectName("surroundAction")
+        if sys.platform == "win32":
+            surround_action.setShortcuts([QKeySequence("Ctrl+Shift+9"), QKeySequence("Ctrl+Shift+0")])
+        else:
+            surround_action.setShortcut(QKeySequence("Ctrl+Shift+0"))
         surround_action.triggered.connect(self.surround_with_parentheses)
         edit_menu.addAction(surround_action)
 

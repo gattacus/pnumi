@@ -61,6 +61,127 @@ def test_variables_prev_sum_and_average() -> None:
     assert evaluate_line("avg", ctx).display == "15 USD"
 
 
+def test_sum_in_target_currency_subtracts_percentage_after_conversion() -> None:
+    provider = StaticRateProvider(
+        {
+            ("GBP", "EUR"): Decimal("2"),
+            ("EUR", "USD"): Decimal("2"),
+        }
+    )
+    result = evaluate_document(
+        "Price: $7 * 4\n"
+        "Fee: 4 GBP in Euro\n"
+        "sum in USD - 4%",
+        {"rate_provider": provider},
+    )
+
+    assert result.displays == ["28 USD", "8 EUR", "42.24 USD"]
+
+
+def test_sum_in_target_currency_converts_each_mixed_currency_result() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n5 EUR\nsum in USD", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 EUR", "20 USD"]
+
+
+def test_sum_converts_mixed_currencies_to_first_result_currency() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n5 EUR\nsum", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 EUR", "20 USD"]
+
+
+def test_sum_converts_mixed_currencies_to_first_result_currency_in_reverse_order() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("5 EUR\n$10\nsum", {"rate_provider": provider})
+
+    assert result.displays == ["5 EUR", "10 USD", "10 EUR"]
+
+
+def test_sum_converts_crypto_and_fiat_to_first_result_currency() -> None:
+    provider = StaticRateProvider({("XMR", "USD"): Decimal("140")})
+    result = evaluate_document("4 xmr\n10 usd\nsum", {"rate_provider": provider})
+
+    assert result.displays == ["4 XMR", "10 USD", "4.0714285714 XMR"]
+
+
+def test_sum_in_target_currency_accepts_currency_name_aliases() -> None:
+    provider = StaticRateProvider(
+        {
+            ("USD", "EUR"): Decimal("0.5"),
+            ("GBP", "EUR"): Decimal("2"),
+        }
+    )
+    result = evaluate_document("$10\n5 GBP\nsum in Euro", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 GBP", "15 EUR"]
+
+
+def test_total_in_target_currency_supports_word_operators() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n5 EUR\ntotal in USD minus 4%", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 EUR", "19.2 USD"]
+
+
+def test_sum_arithmetic_without_target_uses_aggregate_value() -> None:
+    result = evaluate_document("$40\n$60\nsum - 4%")
+
+    assert result.displays == ["40 USD", "60 USD", "96 USD"]
+
+
+def test_average_in_target_currency_converts_before_averaging() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n5 EUR\naverage in USD", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 EUR", "10 USD"]
+
+
+def test_average_converts_mixed_currencies_to_first_result_currency() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n5 EUR\naverage", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "5 EUR", "10 USD"]
+
+
+def test_sum_in_target_unit_converts_each_compatible_unit_result() -> None:
+    result = evaluate_document("1 m\n50 cm\nsum in cm")
+
+    assert result.displays == ["1 m", "50 cm", "150 cm"]
+
+
+def test_sum_converts_mixed_units_to_first_result_unit() -> None:
+    result = evaluate_document("1 m\n50 cm\nsum")
+
+    assert result.displays == ["1 m", "50 cm", "1.5 m"]
+
+
+def test_total_in_target_unit_can_continue_with_typed_arithmetic() -> None:
+    result = evaluate_document("1 m\n50 cm\ntotal in cm + 50 cm")
+
+    assert result.displays == ["1 m", "50 cm", "200 cm"]
+
+
+def test_targeted_sum_respects_section_boundaries() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    result = evaluate_document("$10\n\n5 EUR\nsum in USD", {"rate_provider": provider})
+
+    assert result.displays == ["10 USD", "", "5 EUR", "10 USD"]
+
+
+def test_targeted_sum_rejects_incompatible_value_kinds() -> None:
+    result = evaluate_document("$10\n1 m\nsum in USD")
+
+    assert result.displays == ["10 USD", "1 m", ""]
+    assert result.line_results[-1].diagnostics == ["Cannot combine m with USD"]
+
+
+def test_existing_explicit_mixed_currency_arithmetic_still_converts() -> None:
+    provider = StaticRateProvider({("EUR", "USD"): Decimal("2")})
+    assert evaluate_document("$10 + 5 EUR", {"rate_provider": provider}).displays == ["20 USD"]
+
+
 def test_comments_labels_and_headers() -> None:
     ctx = context()
     assert evaluate_line("# Header", ctx).display == ""
@@ -91,6 +212,7 @@ def test_percentage_variables_support_numi_style_arithmetic() -> None:
     assert evaluate_line("money * return", ctx).display == "50"
     assert evaluate_line("money / return", ctx).display == "20'000"
     assert evaluate_line("return * money", ctx).display == "50"
+    assert evaluate_line("$100 minus 4%", ctx).display == "96 USD"
 
 
 def test_percentage_addition_matches_numi_operand_ordering() -> None:

@@ -53,6 +53,11 @@ class YahooFinanceRateProvider(RateProvider):
         cached = self._cached(base, quote, at)
         if cached is not None:
             return cached
+        reverse_cached = self._cached(quote, base, at)
+        if reverse_cached is not None:
+            rate = Decimal("1") / reverse_cached
+            self._write_cache(base, quote, at, {"rate": str(rate), "fetched_at": datetime.now(UTC).isoformat()})
+            return rate
         rate = self._fetch_rate(base, quote, at)
         self._write_cache(base, quote, at, {"rate": str(rate), "fetched_at": datetime.now(UTC).isoformat()})
         return rate
@@ -79,11 +84,10 @@ class YahooFinanceRateProvider(RateProvider):
         self._path(base, quote, at).write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
     def _fetch_rate(self, base: str, quote: str, at: date | None) -> Decimal:
-        direct_symbols = _yahoo_symbols(base, quote)
-        for symbol in direct_symbols:
+        for symbol, invert in _yahoo_symbol_candidates(base, quote):
             price = self._fetch_symbol_price(symbol, at)
             if price is not None:
-                return price
+                return (Decimal("1") / price) if invert else price
         if base != "USD" and quote != "USD":
             base_usd = self.get_rate(base, "USD", at)
             quote_usd = self.get_rate(quote, "USD", at)
@@ -132,12 +136,20 @@ def _last_close(history: Any) -> Any | None:
 
 
 def _yahoo_symbols(base: str, quote: str) -> list[str]:
+    return [symbol for symbol, _ in _yahoo_symbol_candidates(base, quote)]
+
+
+def _yahoo_symbol_candidates(base: str, quote: str) -> list[tuple[str, bool]]:
     base = base.upper()
     quote = quote.upper()
     if base in ISO_4217_CODES and quote in ISO_4217_CODES:
-        return [f"{base}{quote}=X"]
-    if base in CRYPTO_CODES or quote in CRYPTO_CODES:
-        return [f"{base}-{quote}"]
+        return [(f"{base}{quote}=X", False)]
+    if base in CRYPTO_CODES and quote in ISO_4217_CODES:
+        return [(f"{base}-{quote}", False)]
+    if base in ISO_4217_CODES and quote in CRYPTO_CODES:
+        return [(f"{quote}-{base}", True)]
+    if base in CRYPTO_CODES and quote in CRYPTO_CODES:
+        return [(f"{base}-{quote}", False), (f"{quote}-{base}", True)]
     return []
 
 

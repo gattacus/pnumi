@@ -124,9 +124,9 @@ def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Val
     expression = re.sub(r"\b(?:sci|scientific)\b", "", expression, flags=re.IGNORECASE).strip()
     lower = expression.lower()
     if lower in {"sum", "total"}:
-        return _aggregate(context.section_results, average=False), scientific
+        return _aggregate(context.section_results, average=False, context=context), scientific
     if lower in {"average", "avg"}:
-        return _aggregate(context.section_results, average=True), scientific
+        return _aggregate(context.section_results, average=True, context=context), scientific
     if lower == "prev":
         if not context.previous_results:
             raise ValueError("No previous result")
@@ -140,6 +140,9 @@ def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Val
     percentage = _try_percentage(expression, context)
     if percentage is not None:
         return percentage, scientific
+    aggregate = _try_aggregate_expression(expression, context)
+    if aggregate is not None:
+        return aggregate, scientific
     wrapped = _try_wrapped_function(expression, context)
     if wrapped is not None:
         return wrapped, scientific
@@ -162,23 +165,101 @@ def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Val
     return Value.number(_eval_numeric(expression, context)), scientific
 
 
-def _aggregate(values: list[Value], average: bool) -> Value:
+def _aggregate(values: list[Value], average: bool, context: DocumentContext, target: str | None = None) -> Value:
     usable = [v for v in values if v.magnitude is not None]
     if not usable:
-        return Value.number(0)
-    first = usable[0]
-    total = first.magnitude or Decimal("0")
-    same_currency = first.currency
-    same_unit = first.unit
+        return _target_value(target, context, Decimal("0")) if target else Value.number(0)
+    if target:
+        target_value = _target_value(target, context)
+        if target_value is None:
+            raise ValueError(f"Cannot convert sum to {target}")
+        total = sum((_coerce_aggregate_value_to_target(value, target_value, context) for value in usable), Decimal("0"))
+        if average:
+            total /= Decimal(len(usable))
+        return _same_kind(target_value, total)
+    total_value = usable[0]
     for value in usable[1:]:
-        if value.currency != same_currency:
-            same_currency = None
-        if value.unit != same_unit:
-            same_unit = None
-        total += value.magnitude or Decimal("0")
+        total_value = _add_values(total_value, value, context)
     if average:
-        total /= Decimal(len(usable))
-    return Value(magnitude=total, unit=same_unit, currency=same_currency)
+        total_value = _same_kind(total_value, _magnitude(total_value) / Decimal(len(usable)))
+    return total_value
+
+
+def _try_aggregate_expression(expression: str, context: DocumentContext) -> Value | None:
+    match = re.match(r"^(?P<name>sum|total|average|avg)\b(?P<body>.*)$", expression.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    name = match.group("name").lower()
+    body = match.group("body").strip()
+    average = name in {"average", "avg"}
+    target: str | None = None
+    tail = body
+    conversion_match = re.match(r"^(?:in|into|as|to)\s+(.+)$", body, re.IGNORECASE)
+    if conversion_match:
+        target, tail = _split_aggregate_target_and_tail(conversion_match.group(1), context)
+        if target is None:
+            return None
+    aggregate = _aggregate(context.section_results, average=average, context=context, target=target)
+    if not tail.strip():
+        return aggregate
+    if not _looks_like_arithmetic_tail(tail):
+        return None
+    evaluated = _try_typed_arithmetic(f"__aggregate0{tail}", context, {"__aggregate0": aggregate})
+    if evaluated is None:
+        raise ValueError(f"Invalid expression: {expression}")
+    return evaluated
+
+
+def _split_aggregate_target_and_tail(text: str, context: DocumentContext) -> tuple[str | None, str]:
+    text = text.strip()
+    if _target_value(text, context) is not None:
+        return text, ""
+    for index in _aggregate_target_tail_split_indexes(text):
+        target = text[:index].strip()
+        tail = text[index:].strip()
+        if target and tail and _target_value(target, context) is not None:
+            return target, f" {tail}"
+    return None, ""
+
+
+def _aggregate_target_tail_split_indexes(text: str):
+    seen: set[int] = set()
+    for match in re.finditer(r"\s+(?=(?:plus|minus|times|mul|mod|divide(?:\s+by)?|multiplied\s+by)\b)", text, re.IGNORECASE):
+        seen.add(match.start())
+    for index, char in enumerate(text):
+        if index == 0:
+            continue
+        if char in "+-*^":
+            seen.add(index)
+        elif char == "/" and (text[index - 1].isspace() or (index + 1 < len(text) and text[index + 1].isspace())):
+            seen.add(index)
+    yield from sorted(seen)
+
+
+def _looks_like_arithmetic_tail(text: str) -> bool:
+    return bool(re.match(r"^\s*(?:[+\-*/^%]|plus\b|minus\b|times\b|mul\b|mod\b|divide\b|multiplied\s+by\b)", text, re.IGNORECASE))
+
+
+def _target_value(target: str | None, context: DocumentContext, magnitude: Decimal | str = Decimal("0")) -> Value | None:
+    if not target:
+        return None
+    currency = _currency_code(target)
+    if currency:
+        return Value.money(magnitude, currency)
+    unit = canonical_unit(
+        target,
+        ppi=context.settings.get("ppi", Decimal("96")),
+        em=context.settings.get("em", Decimal("16")),
+    )
+    if unit:
+        return Value.number(magnitude, unit.canonical)
+    return None
+
+
+def _coerce_aggregate_value_to_target(value: Value, target: Value, context: DocumentContext) -> Decimal:
+    if not _has_kind(value):
+        return _magnitude(value)
+    return _coerce_value_to_target(value, target, context)
 
 
 def _convert(value: Value, target: str, context: DocumentContext) -> Value:
@@ -273,8 +354,8 @@ def _try_valued_arithmetic(expression: str, context: DocumentContext) -> Value |
     return Value(magnitude=magnitude, unit=target.unit, currency=target.currency)
 
 
-def _try_typed_arithmetic(expression: str, context: DocumentContext) -> Value | None:
-    normalized, literals, has_typed_value = _prepare_typed_expression(expression, context)
+def _try_typed_arithmetic(expression: str, context: DocumentContext, initial_literals: dict[str, Value] | None = None) -> Value | None:
+    normalized, literals, has_typed_value = _prepare_typed_expression(expression, context, initial_literals)
     if not has_typed_value:
         return None
     try:
@@ -284,27 +365,33 @@ def _try_typed_arithmetic(expression: str, context: DocumentContext) -> Value | 
     return _eval_value_ast(tree.body, context, literals)
 
 
-def _prepare_typed_expression(expression: str, context: DocumentContext) -> tuple[str, dict[str, Value], bool]:
-    literals: dict[str, Value] = {}
+def _prepare_typed_expression(
+    expression: str, context: DocumentContext, initial_literals: dict[str, Value] | None = None
+) -> tuple[str, dict[str, Value], bool]:
+    literals: dict[str, Value] = dict(initial_literals or {})
     parts: list[str] = []
     cursor = 0
     previous_was_literal = False
-    has_typed_value = _expression_mentions_typed_name(expression, context)
+    has_typed_value = any(_has_kind(value) for value in literals.values()) or _expression_mentions_typed_name(expression, context)
     for match in VALUE_TOKEN_RE.finditer(expression):
         token = match.group(0)
         if not token.strip():
             continue
-        value = _parse_value(token, context)
+        leading_spaces = len(token) - len(token.lstrip())
+        token_start = match.start() + leading_spaces
+        token_text = _trim_trailing_word_operator(token.lstrip())
+        token_end = token_start + len(token_text)
+        value = _parse_value(token_text, context)
         if value is None or not _has_kind(value):
             continue
-        gap = expression[cursor : match.start()]
+        gap = expression[cursor:token_start]
         if previous_was_literal and not gap.strip():
             gap = "+"
         placeholder = f"__value{len(literals)}"
         literals[placeholder] = value
         parts.append(gap)
         parts.append(placeholder)
-        cursor = match.end()
+        cursor = token_end
         previous_was_literal = True
         has_typed_value = True
     parts.append(expression[cursor:])
@@ -312,6 +399,15 @@ def _prepare_typed_expression(expression: str, context: DocumentContext) -> tupl
     normalized, has_named_typed_value = _replace_value_names_with_literals(normalized, context, literals)
     has_typed_value = has_typed_value or has_named_typed_value
     return normalized, literals, has_typed_value
+
+
+def _trim_trailing_word_operator(token: str) -> str:
+    return re.sub(
+        r"\s+(?:plus|minus|times|mul|mod|divide(?:\s+by)?|multiplied\s+by)\s*$",
+        "",
+        token,
+        flags=re.IGNORECASE,
+    )
 
 
 def _replace_value_names_with_literals(expression: str, context: DocumentContext, literals: dict[str, Value]) -> tuple[str, bool]:

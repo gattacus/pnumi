@@ -6,6 +6,8 @@
 
 Pnumi is an original Python/PySide6 rewrite of a Numi-style natural language calculator. It is based on public Numi documentation and intentionally omits Alfred integration and JavaScript plugin extensions.
 
+For a detailed guide on how to use Pnumi, including calculations, units, currencies, and mathematical functions, check out the [User Guide](docs/USER_GUIDE.md).
+
 ## Features
 
 - Natural language calculations: write expressions such as `subtotal = hotel + train + meals` and see results update beside each line.

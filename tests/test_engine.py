@@ -408,3 +408,12 @@ def test_parentheses_calculations() -> None:
     assert evaluate_line("(10 USD in EUR) + 5 EUR", ctx).display == "14 EUR"
     assert evaluate_line("sqrt((1 BTC in CHF) to USD)", ctx).display.startswith("234.52")
 
+
+def test_bitwise_operations() -> None:
+    ctx = context()
+    assert evaluate_line("12 & 25", ctx).display == "8"
+    assert evaluate_line("12 | 25", ctx).display == "29"
+    assert evaluate_line("2 xor 3", ctx).display == "1"
+    assert evaluate_line("2 ^ 3", ctx).display == "8"
+
+

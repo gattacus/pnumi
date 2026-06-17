@@ -6,6 +6,12 @@
 
 - A confirmation dialog before closing a tab (bypassed if the sheet is empty).
 - Support for closing tabs by middle-clicking on them in the tab bar.
+- An extensive end-user guide (`docs/USER_GUIDE.md`) detailing calculations, units, currencies, mathematical functions, dates, times, and keyboard shortcuts.
+- Automated tests (`tests/test_user_guide.py`) that verify guide examples against the evaluation engine.
+
+### Fixed
+
+- A bug where the `xor` keyword was incorrectly normalized to the exponentiation operator (`**`) rather than evaluating as bitwise XOR.
 
 ## 0.2.0 - 2026-06-17
 

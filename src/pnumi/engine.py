@@ -1045,6 +1045,7 @@ def _normalize_numeric(expression: str, context: DocumentContext, replace_values
     text = expression
     text = text.replace("×", "*").replace("÷", "/").replace("−", "-")
     text = re.sub(r"\bmultiplied\s+by\b", "*", text, flags=re.IGNORECASE)
+    text = text.replace("^", "**")
     replacements = {
         r"\bplus\b": "+",
         r"\band\b": "+",
@@ -1061,7 +1062,6 @@ def _normalize_numeric(expression: str, context: DocumentContext, replace_values
     }
     for pattern, replacement in replacements.items():
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-    text = text.replace("^", "**")
     text = re.sub(r"(\d)\s*\(", r"\1*(", text)
     text = re.sub(r"\)\s*(\d)", r")*\1", text)
     text = re.sub(r"\bpi\b", "pi", text, flags=re.IGNORECASE)

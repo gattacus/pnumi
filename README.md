@@ -17,7 +17,7 @@ Pnumi is an original Python/PySide6 rewrite of a Numi-style natural language cal
 - Autocomplete and highlighting: get completions for functions, units, currencies, timezones, and document variables.
 - Import, export, copy, and print: move `.numi` or text documents in and out of the app from the menu.
 - Light and dark themes: switch editor themes and alternating row backgrounds in settings.
-- macOS app build: package Pnumi as a local macOS application with the included build script.
+- macOS and Windows app builds: package Pnumi as a local desktop application with the included build scripts.
 
 ## Screenshots
 
@@ -52,6 +52,14 @@ Pnumi is released under the MIT License. See [LICENSE](LICENSE).
 
 ```sh
 ./scripts/build_macos_app.sh
+```
+
+## Build Windows App
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -e ".[dev]"
+.\scripts\build_windows_app.ps1
 ```
 
 ## Release
@@ -89,7 +97,7 @@ Releases are built by GitHub Actions when a version tag is pushed.
    git push origin v0.1.1
    ```
 
-The release workflow checks that the tag matches `pyproject.toml`, extracts the matching `CHANGELOG.md` entry, runs the test suite, builds the macOS app, zips `Pnumi.app`, and attaches the zip to a GitHub Release. For example, `version = "0.1.1"` must be released with the tag `v0.1.1` and a `## 0.1.1` changelog entry.
+The release workflow checks that the tag matches `pyproject.toml`, extracts the matching `CHANGELOG.md` entry, runs the test suite, builds the macOS and Windows apps, zips the platform artifacts, and attaches both zips to a GitHub Release. For example, `version = "0.1.1"` must be released with the tag `v0.1.1` and a `## 0.1.1` changelog entry.
 
 If a tag and GitHub Release already exist, pushing the same tag again will not create a new release. Update that release's notes from the matching `CHANGELOG.md` entry in the GitHub UI, or put those notes in `release-notes.md` and run:
 

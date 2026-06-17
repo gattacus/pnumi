@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QColor, QTextCursor
+from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import QApplication
 
+from pnumi.rates import StaticRateProvider
 from pnumi.ui import (
     COMMENT_MARKDOWN_COLOR,
     DARK_MODE_KEY,
@@ -32,6 +37,23 @@ from pnumi.ui import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _static_ui_rates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pnumi.ui.default_rate_provider",
+        lambda: StaticRateProvider(
+            {
+                ("USD", "EUR"): Decimal("0.92"),
+                ("USD", "CAD"): Decimal("1.35"),
+                ("USD", "GBP"): Decimal("0.79"),
+                ("USD", "CHF"): Decimal("0.89"),
+                ("BTC", "USD"): Decimal("65000"),
+                ("ETH", "USD"): Decimal("3500"),
+            }
+        ),
+    )
+
+
 def _window_with_test_settings(qtbot, tmp_path, name: str = "settings") -> MainWindow:
     window = MainWindow(settings=QSettings(str(tmp_path / f"{name}.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(window)
@@ -42,6 +64,38 @@ def test_typing_updates_results(qtbot, tmp_path) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("8 times 9")
     qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "72", timeout=1000)
+
+
+def test_recalculation_does_not_block_ui_thread(qtbot, tmp_path, monkeypatch) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window._update_timer.stop()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_evaluate_document(text: str, options=None):
+        started.set()
+        release.wait(timeout=5)
+        return SimpleNamespace(displays=[f"{text} result"])
+
+    monkeypatch.setattr("pnumi.ui.evaluate_document", slow_evaluate_document)
+    window.editor.setPlainText("slow")
+    window._update_timer.stop()
+
+    started_at = time.perf_counter()
+    window.recalculate()
+
+    assert time.perf_counter() - started_at < 0.1
+    assert started.wait(timeout=1)
+
+    window.set_dark_mode(True)
+    assert window.document_surface.theme == DARK_THEME
+
+    window.editor.setPlainText("newer")
+    window._update_timer.stop()
+    window.recalculate()
+    release.set()
+
+    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "newer result", timeout=1000)
 
 
 def test_copy_current_result(qtbot, tmp_path) -> None:
@@ -127,6 +181,18 @@ def test_autocomplete_can_be_opened_by_action(qtbot, tmp_path) -> None:
 
     assert action is not None
     assert action.shortcuts() == SHOW_COMPLETIONS_SHORTCUTS
+
+
+def test_surround_with_parentheses_shortcut(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+
+    action = window.findChild(QAction, "surroundAction")
+
+    assert action is not None
+    if sys.platform == "win32":
+        assert action.shortcuts() == [QKeySequence("Ctrl+Shift+9"), QKeySequence("Ctrl+Shift+0")]
+    else:
+        assert action.shortcut() == QKeySequence("Ctrl+Shift+0")
 
 
 def test_open_completion_popup_uses_current_word(qtbot) -> None:
@@ -290,6 +356,12 @@ def test_initial_content_uses_first_run_default(qtbot, tmp_path) -> None:
     assert window.editor.toPlainText() == DEFAULT_DOCUMENT_TEXT
 
 
+def test_initial_content_is_calculated_asynchronously(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+
+    qtbot.waitUntil(lambda: (window.results.toPlainText().splitlines() or [""])[0] == "80.8695652174 USD", timeout=1000)
+
+
 def test_editor_content_is_restored_from_last_session(qtbot, tmp_path) -> None:
     settings_path = tmp_path / "settings.ini"
     settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
@@ -400,8 +472,42 @@ def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:
     assert _format_color_at(third_line_formats, 13) == KEYWORD_HIGHLIGHT_COLOR
 
 
+def test_conversion_keywords_are_highlighted(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText("10 USD to EUR\n10 USD in EUR\n10 USD into EUR\n10 USD as EUR")
+    editor.highlighter.rehighlight()
+
+    # Get formatting for each line
+    block = editor.document().firstBlock()
+
+    # line 1: 10 USD to EUR
+    # "to" starts at index 7, length 2
+    formats_to = block.layout().formats()
+    assert _format_color_at(formats_to, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 2: 10 USD in EUR
+    # "in" starts at index 7, length 2
+    block = block.next()
+    formats_in = block.layout().formats()
+    assert _format_color_at(formats_in, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 3: 10 USD into EUR
+    # "into" starts at index 7, length 4
+    block = block.next()
+    formats_into = block.layout().formats()
+    assert _format_color_at(formats_into, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+    # line 4: 10 USD as EUR
+    # "as" starts at index 7, length 2
+    block = block.next()
+    formats_as = block.layout().formats()
+    assert _format_color_at(formats_as, 7) == KEYWORD_HIGHLIGHT_COLOR
+
+
 def _format_color_at(formats, index: int) -> QColor | None:
     for item in formats:
         if item.start <= index < item.start + item.length:
             return item.format.foreground().color()
     return None
+

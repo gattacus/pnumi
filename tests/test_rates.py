@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from pnumi.rates import (
@@ -9,6 +11,7 @@ from pnumi.rates import (
     YahooFinanceRateProvider,
     _yahoo_symbol_candidates,
     _yahoo_symbols,
+    default_rate_provider,
 )
 
 
@@ -51,6 +54,33 @@ def test_yahoo_finance_rate_provider_fetches_direct_fiat(monkeypatch, tmp_path) 
     assert calls == [("EURUSD=X", None)]
 
 
+def test_yahoo_finance_rate_provider_reads_latest_chart_price(monkeypatch, tmp_path) -> None:
+    provider = YahooFinanceRateProvider(cache_dir=tmp_path)
+
+    def fake_fetch_chart(symbol: str, params: dict[str, str]):
+        assert symbol == "EURUSD=X"
+        assert params == {"range": "5d", "interval": "1d"}
+        return {"chart": {"result": [{"meta": {"regularMarketPrice": 1.1601}, "indicators": {"quote": [{"close": [1.15]}]}}]}}
+
+    monkeypatch.setattr(provider, "_fetch_chart", fake_fetch_chart)
+
+    assert provider.get_rate("EUR", "USD") == Decimal("1.1601")
+
+
+def test_yahoo_finance_rate_provider_reads_historical_chart_close(monkeypatch, tmp_path) -> None:
+    provider = YahooFinanceRateProvider(cache_dir=tmp_path)
+
+    def fake_fetch_chart(symbol: str, params: dict[str, str]):
+        assert symbol == "BTC-USD"
+        assert params["interval"] == "1d"
+        assert int(params["period1"]) < int(params["period2"])
+        return {"chart": {"result": [{"indicators": {"quote": [{"close": [65000.0, None, 66000.5]}]}}]}}
+
+    monkeypatch.setattr(provider, "_fetch_chart", fake_fetch_chart)
+
+    assert provider.get_rate("BTC", "USD", date(2026, 6, 17)) == Decimal("66000.5")
+
+
 def test_yahoo_finance_rate_provider_fetches_direct_crypto(monkeypatch, tmp_path) -> None:
     provider = YahooFinanceRateProvider(cache_dir=tmp_path)
 
@@ -78,7 +108,7 @@ def test_yahoo_finance_rate_provider_inverts_crypto_quote(monkeypatch, tmp_path)
 
 def test_yahoo_finance_rate_provider_uses_reverse_cache_for_crypto(monkeypatch, tmp_path) -> None:
     provider = YahooFinanceRateProvider(cache_dir=tmp_path)
-    provider._write_cache("XMR", "USD", None, {"rate": "140", "fetched_at": "2026-06-17T00:00:00+00:00"})
+    provider._write_cache("XMR", "USD", None, {"rate": "140", "fetched_at": datetime.now(UTC).isoformat()})
 
     def fake_fetch(symbol: str, at=None):
         raise AssertionError(f"unexpected fetch for {symbol}")
@@ -86,6 +116,37 @@ def test_yahoo_finance_rate_provider_uses_reverse_cache_for_crypto(monkeypatch, 
     monkeypatch.setattr(provider, "_fetch_symbol_price", fake_fetch)
 
     assert provider.get_rate("USD", "XMR") == Decimal("0.007142857142857142857142857143")
+
+
+def test_default_rate_provider_fetches_before_fallback(monkeypatch, caplog) -> None:
+    def fake_fetch(self, base: str, quote: str, at=None):
+        assert (base, quote) == ("EUR", "USD")
+        return Decimal("1.08")
+
+    monkeypatch.setattr(YahooFinanceRateProvider, "_cached", lambda self, base, quote, at=None: None)
+    monkeypatch.setattr(YahooFinanceRateProvider, "_write_cache", lambda self, base, quote, at, data: None)
+    monkeypatch.setattr(YahooFinanceRateProvider, "_fetch_rate", fake_fetch)
+
+    with caplog.at_level(logging.WARNING, logger="pnumi.rates"):
+        assert default_rate_provider().get_rate("EUR", "USD") == Decimal("1.08")
+
+    assert "Using fallback" not in caplog.text
+
+
+def test_default_rate_provider_logs_fallback_warning(monkeypatch, caplog) -> None:
+    def fake_fetch(self, base: str, quote: str, at=None):
+        raise LookupError("offline")
+
+    monkeypatch.setattr(YahooFinanceRateProvider, "_cached", lambda self, base, quote, at=None: None)
+    monkeypatch.setattr(YahooFinanceRateProvider, "_write_cache", lambda self, base, quote, at, data: None)
+    monkeypatch.setattr(YahooFinanceRateProvider, "_fetch_rate", fake_fetch)
+
+    with caplog.at_level(logging.WARNING, logger="pnumi.rates"):
+        rate = default_rate_provider().get_rate("EUR", "USD")
+
+    assert rate == Decimal("1.086956521739130434782608696")
+    assert "Using fallback StaticRateProvider rate for EUR/USD" in caplog.text
+    assert "offline" in caplog.text
 
 
 def test_yahoo_finance_rate_provider_crosses_through_usd(monkeypatch, tmp_path) -> None:

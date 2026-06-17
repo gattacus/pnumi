@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +14,7 @@ from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QColor, QTextCursor
 from PySide6.QtWidgets import QApplication
 
+from pnumi.rates import StaticRateProvider
 from pnumi.ui import (
     COMMENT_MARKDOWN_COLOR,
     DARK_MODE_KEY,
@@ -32,6 +37,23 @@ from pnumi.ui import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _static_ui_rates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pnumi.ui.default_rate_provider",
+        lambda: StaticRateProvider(
+            {
+                ("USD", "EUR"): Decimal("0.92"),
+                ("USD", "CAD"): Decimal("1.35"),
+                ("USD", "GBP"): Decimal("0.79"),
+                ("USD", "CHF"): Decimal("0.89"),
+                ("BTC", "USD"): Decimal("65000"),
+                ("ETH", "USD"): Decimal("3500"),
+            }
+        ),
+    )
+
+
 def _window_with_test_settings(qtbot, tmp_path, name: str = "settings") -> MainWindow:
     window = MainWindow(settings=QSettings(str(tmp_path / f"{name}.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(window)
@@ -42,6 +64,38 @@ def test_typing_updates_results(qtbot, tmp_path) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("8 times 9")
     qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "72", timeout=1000)
+
+
+def test_recalculation_does_not_block_ui_thread(qtbot, tmp_path, monkeypatch) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window._update_timer.stop()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_evaluate_document(text: str, options=None):
+        started.set()
+        release.wait(timeout=5)
+        return SimpleNamespace(displays=[f"{text} result"])
+
+    monkeypatch.setattr("pnumi.ui.evaluate_document", slow_evaluate_document)
+    window.editor.setPlainText("slow")
+    window._update_timer.stop()
+
+    started_at = time.perf_counter()
+    window.recalculate()
+
+    assert time.perf_counter() - started_at < 0.1
+    assert started.wait(timeout=1)
+
+    window.set_dark_mode(True)
+    assert window.document_surface.theme == DARK_THEME
+
+    window.editor.setPlainText("newer")
+    window._update_timer.stop()
+    window.recalculate()
+    release.set()
+
+    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "newer result", timeout=1000)
 
 
 def test_copy_current_result(qtbot, tmp_path) -> None:
@@ -288,6 +342,12 @@ def test_initial_content_uses_first_run_default(qtbot, tmp_path) -> None:
     qtbot.addWidget(window)
 
     assert window.editor.toPlainText() == DEFAULT_DOCUMENT_TEXT
+
+
+def test_initial_content_is_calculated_asynchronously(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+
+    qtbot.waitUntil(lambda: (window.results.toPlainText().splitlines() or [""])[0] == "80.8695652174 USD", timeout=1000)
 
 
 def test_editor_content_is_restored_from_last_session(qtbot, tmp_path) -> None:

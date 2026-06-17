@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import tomllib
@@ -8,7 +9,20 @@ from importlib.metadata import PackageNotFoundError, version
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRectF, QSettings, QSize, QStringListModel, Qt, QTimer
+from platformdirs import user_log_dir
+from PySide6.QtCore import (
+    QObject,
+    QPoint,
+    QRectF,
+    QRunnable,
+    QSettings,
+    QSize,
+    QStringListModel,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -43,11 +57,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from .currencies import CURRENCY_ALIASES, CURRENCY_CODES
 from .engine import TIMEZONES, evaluate_document
 from .formatting import DEFAULT_DECIMAL_PLACES
 from .numi_import import normalize_numi_import
+from .rates import default_rate_provider
 from .units import ALIASES as UNIT_ALIASES
 
 ALTERNATE_ROW_BACKGROUND = QColor("#efd046")
@@ -75,6 +91,7 @@ CLIPBOARD_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'\u2018\u2019](?=\d{3}
 RESULT_COLUMN_LEFT_PADDING = 8
 RESULT_COLUMN_RIGHT_PADDING = 22
 MIN_RESULT_COLUMN_WIDTH = 56
+MAX_EVALUATION_WORKERS = 4
 
 
 def is_show_completions_shortcut(event: QKeyEvent) -> bool:
@@ -454,6 +471,32 @@ class AboutDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class EvaluationWorkerSignals(QObject):
+    finished = Signal(int, str, object, str)
+
+
+class EvaluationWorker(QRunnable):
+    def __init__(self, revision: int, text: str, decimal_places: int) -> None:
+        super().__init__()
+        self.revision = revision
+        self.text = text
+        self.decimal_places = decimal_places
+        self.signals = EvaluationWorkerSignals()
+
+    def run(self) -> None:
+        try:
+            document = evaluate_document(
+                self.text,
+                {
+                    "decimal_places": self.decimal_places,
+                    "rate_provider": default_rate_provider(),
+                },
+            )
+            self.signals.finished.emit(self.revision, self.text, document.displays, "")
+        except Exception as exc:
+            self.signals.finished.emit(self.revision, self.text, [], str(exc))
+
+
 def _clipboard_result_text(text: str) -> str:
     return CLIPBOARD_THOUSANDS_SEPARATOR_RE.sub("", text)
 
@@ -623,6 +666,12 @@ class MainWindow(QMainWindow):
         self.result_decimal_places = _settings_int(self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20)
         self._loading_window_state = True
         self._loading_content = True
+        self._evaluation_pool = QThreadPool(self)
+        self._evaluation_pool.setMaxThreadCount(MAX_EVALUATION_WORKERS)
+        self._evaluation_revision = 0
+        self._active_evaluations = 0
+        self._pending_evaluation: tuple[int, str, int] | None = None
+        self._evaluation_workers: set[EvaluationWorker] = set()
         self.resize(_settings_size(self.settings, WINDOW_SIZE_KEY, DEFAULT_WINDOW_SIZE))
         self.editor = CompletionTextEdit()
         self.editor.setObjectName("editor")
@@ -643,10 +692,6 @@ class MainWindow(QMainWindow):
         self._update_timer.setSingleShot(True)
         self._update_timer.setInterval(80)
         self._update_timer.timeout.connect(self.recalculate)
-        self.editor.textChanged.connect(self._update_timer.start)
-        self.editor.textChanged.connect(self.refresh_autocomplete)
-        self.editor.textChanged.connect(self.document_surface.update)
-        self.editor.textChanged.connect(self._save_last_content)
         self.editor.updateRequest.connect(self._sync_result_scroll)
         self.editor.updateRequest.connect(lambda *_: self.document_surface.update())
         self.editor.verticalScrollBar().valueChanged.connect(self._sync_scrollbar_value)
@@ -656,8 +701,14 @@ class MainWindow(QMainWindow):
         self._connect_system_theme_changes()
         self.apply_settings()
         self.editor.setPlainText(self._initial_document_text())
+        self.refresh_autocomplete()
+        self.editor.textChanged.connect(self._update_timer.start)
+        self.editor.textChanged.connect(self.refresh_autocomplete)
+        self.editor.textChanged.connect(self.document_surface.update)
+        self.editor.textChanged.connect(self._save_last_content)
         self._loading_content = False
         self._loading_window_state = False
+        self.recalculate()
 
     def _build_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -767,9 +818,44 @@ class MainWindow(QMainWindow):
         self.document_surface.update()
 
     def recalculate(self) -> None:
-        document = evaluate_document(self.editor.toPlainText(), {"decimal_places": self.result_decimal_places})
-        self.results.setPlainText("\n".join(document.displays))
-        self.results.fit_to_content(document.displays)
+        self._evaluation_revision += 1
+        self._pending_evaluation = (self._evaluation_revision, self.editor.toPlainText(), self.result_decimal_places)
+        self._start_pending_evaluation()
+
+    def _start_pending_evaluation(self) -> None:
+        if self._active_evaluations >= MAX_EVALUATION_WORKERS or self._pending_evaluation is None:
+            return
+        revision, text, decimal_places = self._pending_evaluation
+        self._pending_evaluation = None
+        self._active_evaluations += 1
+        worker = EvaluationWorker(revision, text, decimal_places)
+        self._evaluation_workers.add(worker)
+
+        def handle_finished(revision: int, text: str, displays: object, error: str, *, worker: EvaluationWorker = worker) -> None:
+            self._handle_evaluation_finished(worker, revision, text, displays, error)
+
+        worker.signals.finished.connect(handle_finished)
+        self._evaluation_pool.start(worker)
+
+    def _handle_evaluation_finished(self, worker: EvaluationWorker, revision: int, text: str, displays: object, error: str) -> None:
+        self._evaluation_workers.discard(worker)
+        self._active_evaluations = max(0, self._active_evaluations - 1)
+        if not isValid(self):
+            return
+        try:
+            current_text = self.editor.toPlainText()
+        except RuntimeError:
+            return
+        if revision == self._evaluation_revision and text == current_text:
+            result_displays = displays if isinstance(displays, list) else []
+            if error:
+                result_displays = ["" for _ in text.splitlines()]
+            self._apply_evaluation_results(result_displays)
+        self._start_pending_evaluation()
+
+    def _apply_evaluation_results(self, displays: list[str]) -> None:
+        self.results.setPlainText("\n".join(displays))
+        self.results.fit_to_content(displays)
         self.results.update_alternating_row_backgrounds()
         self.document_surface.update()
         self._sync_scrollbar_range(self.editor.verticalScrollBar().minimum(), self.editor.verticalScrollBar().maximum())
@@ -798,6 +884,9 @@ class MainWindow(QMainWindow):
         self._save_window_size()
 
     def closeEvent(self, event) -> None:
+        self._evaluation_revision += 1
+        self._pending_evaluation = None
+        self._evaluation_pool.clear()
         self._save_window_size()
         super().closeEvent(event)
 
@@ -917,6 +1006,7 @@ class MainWindow(QMainWindow):
 
 
 def run(argv: list[str]) -> int:
+    _configure_logging()
     app = QApplication(argv)
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setOrganizationDomain(SETTINGS_ORGANIZATION_DOMAIN)
@@ -927,6 +1017,23 @@ def run(argv: list[str]) -> int:
     window.setWindowIcon(_app_icon())
     window.show()
     return app.exec()
+
+
+def _configure_logging() -> None:
+    if logging.getLogger().handlers:
+        return
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        log_dir = Path(user_log_dir("Pnumi", "Pnumi"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handlers.insert(0, logging.FileHandler(log_dir / "pnumi.log", encoding="utf-8"))
+    except Exception:
+        pass
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+    )
 
 
 def _app_settings() -> QSettings:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +11,8 @@ from typing import Any
 from platformdirs import user_cache_dir
 
 from .currencies import CRYPTO_CODES, ISO_4217_CODES
+
+logger = logging.getLogger(__name__)
 
 
 class RateProvider:
@@ -154,21 +157,34 @@ def _yahoo_symbol_candidates(base: str, quote: str) -> list[tuple[str, bool]]:
 
 
 class CompositeRateProvider(RateProvider):
-    def __init__(self, providers: list[RateProvider]) -> None:
+    def __init__(self, providers: list[RateProvider], warn_on_fallback: bool = False) -> None:
         self.providers = providers
+        self.warn_on_fallback = warn_on_fallback
 
     def get_rate(self, base: str, quote: str, at: date | None = None) -> Decimal:
-        last_error: Exception | None = None
+        failures: list[tuple[RateProvider, Exception]] = []
         for provider in self.providers:
             try:
-                return provider.get_rate(base, quote, at)
+                rate = provider.get_rate(base, quote, at)
             except Exception as exc:
-                last_error = exc
-        raise LookupError(f"No rate for {base}/{quote}") from last_error
+                failures.append((provider, exc))
+                continue
+            if failures and self.warn_on_fallback:
+                failed_provider, last_error = failures[-1]
+                logger.warning(
+                    "Using fallback %s rate for %s/%s because %s could not provide a rate: %s",
+                    provider.__class__.__name__,
+                    base.upper(),
+                    quote.upper(),
+                    failed_provider.__class__.__name__,
+                    last_error,
+                )
+            return rate
+        raise LookupError(f"No rate for {base}/{quote}") from failures[-1][1] if failures else None
 
 
-def default_rate_provider() -> RateProvider:
-    fallback = StaticRateProvider(
+def fallback_rate_provider() -> RateProvider:
+    return StaticRateProvider(
         {
             ("USD", "EUR"): Decimal("0.92"),
             ("USD", "CAD"): Decimal("1.35"),
@@ -178,4 +194,7 @@ def default_rate_provider() -> RateProvider:
             ("ETH", "USD"): Decimal("3500"),
         }
     )
-    return CompositeRateProvider([YahooFinanceRateProvider(), fallback])
+
+
+def default_rate_provider() -> RateProvider:
+    return CompositeRateProvider([YahooFinanceRateProvider(), fallback_rate_provider()], warn_on_fallback=True)

@@ -511,3 +511,98 @@ def _format_color_at(formats, index: int) -> QColor | None:
             return item.format.foreground().color()
     return None
 
+
+def test_add_and_close_tab(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    # Initially 1 tab
+    assert window.stacked_widget.count() == 1
+    assert window.tab_container.isHidden()
+
+    # Add a tab
+    window.add_new_empty_tab()
+    assert window.stacked_widget.count() == 2
+    assert not window.tab_container.isHidden()
+    assert window.tab_bar.count() == 2
+
+    # Close the tab
+    window.close_tab(1)
+    assert window.stacked_widget.count() == 1
+    assert window.tab_container.isHidden()
+
+
+def test_tab_switching(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.editor.setPlainText("10 + 20")
+    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "30", timeout=1000)
+
+    window.add_new_empty_tab()
+    assert window.editor.toPlainText() == ""
+    window.editor.setPlainText("5 + 5")
+    qtbot.waitUntil(lambda: window.results.toPlainText().strip() == "10", timeout=1000)
+
+    # Switch back to first tab
+    window.switch_tab(0)
+    assert window.editor.toPlainText() == "10 + 20"
+    assert window.results.toPlainText().strip() == "30"
+
+
+def test_tab_persistence(qtbot, tmp_path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+
+    window.editor.setPlainText("first tab")
+    window.add_new_empty_tab()
+    window.editor.setPlainText("second tab")
+    settings.sync()
+
+    # Create new window, should load tabs
+    reloaded_settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    reloaded = MainWindow(settings=reloaded_settings)
+    qtbot.addWidget(reloaded)
+
+    assert reloaded.stacked_widget.count() == 2
+    reloaded.switch_tab(0)
+    assert reloaded.editor.toPlainText() == "first tab"
+    reloaded.switch_tab(1)
+    assert reloaded.editor.toPlainText() == "second tab"
+
+
+def test_close_last_tab_resets(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.editor.setPlainText("some text")
+    assert window.stacked_widget.count() == 1
+
+    window.close_tab(0)
+    # Should still have 1 tab, but it should be empty
+    assert window.stacked_widget.count() == 1
+    assert window.editor.toPlainText() == ""
+
+
+def test_rename_tab(qtbot, tmp_path, monkeypatch) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    assert window.tab_bar.tabText(0) == "Sheet 1"
+
+    # Mock QInputDialog.getText to return a custom name
+    monkeypatch.setattr("pnumi.ui.QInputDialog.getText", lambda *args, **kwargs: ("Custom Title", True))
+
+    window.rename_tab_dialog(0)
+    assert window.tab_bar.tabText(0) == "Custom Title"
+    assert window.current_sheet.custom_title == "Custom Title"
+
+
+def test_reorder_tabs_keeps_titles(qtbot, tmp_path) -> None:
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()  # Adds "Sheet 2"
+
+    assert window.tab_bar.tabText(0) == "Sheet 1"
+    assert window.tab_bar.tabText(1) == "Sheet 2"
+
+    # Move tab 1 ("Sheet 2") to index 0
+    window.move_tab(1, 0)
+
+    # Check that names are preserved and didn't auto-increment/re-index
+    assert window.tab_bar.tabText(0) == "Sheet 2"
+    assert window.tab_bar.tabText(1) == "Sheet 1"
+

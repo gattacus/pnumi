@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -54,6 +55,9 @@ from PySide6.QtWidgets import (
     QScrollBar,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
+    QTabBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -656,11 +660,78 @@ class CompletionTextEdit(StripedPlainTextEdit):
         self.completer.complete(rect)
 
 
+class Sheet(QWidget):
+    def __init__(self, settings: QSettings, parent: QWidget | None = None, content: str = "", path: Path | None = None, title: str = "") -> None:
+        super().__init__(parent)
+        self.settings = settings
+        self.current_path = path
+        self.custom_title = title
+
+        self.editor = CompletionTextEdit()
+        self.editor.setObjectName("editor")
+        self.editor.setPlaceholderText("Type calculations here")
+        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+
+        self.results = ResultPane()
+        self.document_scrollbar = QScrollBar(Qt.Orientation.Vertical)
+
+        font = QFont("Menlo")
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSize(14)
+        self.editor.setFont(font)
+        self.results.setFont(font)
+
+        self.document_surface = DocumentSurface(self.editor, self.results, self.document_scrollbar)
+        self.splitter = self.document_surface.splitter
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.document_surface)
+
+        self.editor.updateRequest.connect(self._sync_result_scroll)
+        self.editor.updateRequest.connect(lambda *_: self.document_surface.update())
+        self.editor.verticalScrollBar().valueChanged.connect(self._sync_scrollbar_value)
+        self.editor.verticalScrollBar().rangeChanged.connect(self._sync_scrollbar_range)
+        self.document_scrollbar.valueChanged.connect(self._set_document_scroll)
+
+        if content:
+            self.editor.setPlainText(content)
+
+    def set_theme(self, theme: EditorTheme) -> None:
+        self.document_surface.set_theme(theme)
+        self.results.set_theme(theme)
+        self.editor.highlighter.set_theme(theme)
+
+    def _sync_result_scroll(self) -> None:
+        self.results.verticalScrollBar().setValue(self.editor.verticalScrollBar().value())
+
+    def _sync_scrollbar_value(self, value: int) -> None:
+        self.document_scrollbar.setValue(value)
+        self._sync_result_scroll()
+        self.document_surface.update()
+
+    def _sync_scrollbar_range(self, minimum: int, maximum: int) -> None:
+        source = self.editor.verticalScrollBar()
+        self.document_scrollbar.setRange(minimum, maximum)
+        self.document_scrollbar.setPageStep(source.pageStep())
+        self.document_scrollbar.setSingleStep(source.singleStep())
+        self.document_scrollbar.setValue(source.value())
+
+    def _set_document_scroll(self, value: int) -> None:
+        self.editor.verticalScrollBar().setValue(value)
+        self.results.verticalScrollBar().setValue(value)
+        self.document_surface.update()
+
+    def sync_scrollbar_range(self) -> None:
+        source = self.editor.verticalScrollBar()
+        self._sync_scrollbar_range(source.minimum(), source.maximum())
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: QSettings | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Pnumi")
-        self.current_path: Path | None = None
         self.settings = settings or _app_settings()
         self.alternating_row_background = _settings_bool(self.settings, ALTERNATING_ROW_BACKGROUND_KEY, True)
         self.theme_mode = _settings_theme_mode(self.settings)
@@ -675,47 +746,298 @@ class MainWindow(QMainWindow):
         self._pending_evaluation: tuple[int, str, int] | None = None
         self._evaluation_workers: set[EvaluationWorker] = set()
         self.resize(_settings_size(self.settings, WINDOW_SIZE_KEY, DEFAULT_WINDOW_SIZE))
-        self.editor = CompletionTextEdit()
-        self.editor.setObjectName("editor")
-        self.editor.setPlaceholderText("Type calculations here")
-        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.results = ResultPane()
-        self.document_scrollbar = QScrollBar(Qt.Orientation.Vertical)
-        font = QFont("Menlo")
-        font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setPointSize(14)
-        self.editor.setFont(font)
-        self.results.setFont(font)
 
-        self.document_surface = DocumentSurface(self.editor, self.results, self.document_scrollbar)
-        self.splitter = self.document_surface.splitter
-        self.setCentralWidget(self.document_surface)
+        # Set up Tab Bar
+        self.tab_bar = QTabBar()
+        self.tab_bar.setTabsClosable(False)
+        self.tab_bar.setMovable(True)
+        self.tab_bar.tabCloseRequested.connect(self.close_tab)
+        self.tab_bar.currentChanged.connect(self.switch_tab)
+        self.tab_bar.tabMoved.connect(self.move_tab)
+        self.tab_bar.tabBarDoubleClicked.connect(self.rename_tab_dialog)
+
+        # Plus button for new tab
+        self.new_tab_button = QToolButton()
+        self.new_tab_button.setText("+")
+        self.new_tab_button.setToolTip("New Sheet")
+        self.new_tab_button.clicked.connect(self.add_new_empty_tab)
+
+        # Tab container for horizontal layout
+        self.tab_container = QWidget()
+        self.tab_container.setObjectName("tabContainer")
+        tab_layout = QHBoxLayout(self.tab_container)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+        tab_layout.addWidget(self.tab_bar)
+        tab_layout.addWidget(self.new_tab_button)
+        tab_layout.addStretch(1)
+
+        # Stacked Widget
+        self.stacked_widget = QStackedWidget()
+
+        central_widget = QWidget()
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.tab_container)
+        layout.addWidget(self.stacked_widget)
+        self.setCentralWidget(central_widget)
+
         self._update_timer = QTimer(self)
         self._update_timer.setSingleShot(True)
         self._update_timer.setInterval(80)
         self._update_timer.timeout.connect(self.recalculate)
-        self.editor.updateRequest.connect(self._sync_result_scroll)
-        self.editor.updateRequest.connect(lambda *_: self.document_surface.update())
-        self.editor.verticalScrollBar().valueChanged.connect(self._sync_scrollbar_value)
-        self.editor.verticalScrollBar().rangeChanged.connect(self._sync_scrollbar_range)
-        self.document_scrollbar.valueChanged.connect(self._set_document_scroll)
+
         self._build_actions()
         self._connect_system_theme_changes()
         self.apply_settings()
-        self.editor.setPlainText(self._initial_document_text())
-        self.refresh_autocomplete()
-        self.editor.textChanged.connect(self._update_timer.start)
-        self.editor.textChanged.connect(self.refresh_autocomplete)
-        self.editor.textChanged.connect(self.document_surface.update)
-        self.editor.textChanged.connect(self._save_last_content)
+
+        self.load_tabs()
+
         self._loading_content = False
         self._loading_window_state = False
         self.recalculate()
+        self.refresh_autocomplete()
+
+    @property
+    def current_sheet(self) -> Sheet | None:
+        return self.stacked_widget.currentWidget()
+
+    @property
+    def editor(self) -> CompletionTextEdit | None:
+        sheet = self.current_sheet
+        return sheet.editor if sheet else None
+
+    @property
+    def results(self) -> ResultPane | None:
+        sheet = self.current_sheet
+        return sheet.results if sheet else None
+
+    @property
+    def document_surface(self) -> DocumentSurface | None:
+        sheet = self.current_sheet
+        return sheet.document_surface if sheet else None
+
+    @property
+    def document_scrollbar(self) -> QScrollBar | None:
+        sheet = self.current_sheet
+        return sheet.document_scrollbar if sheet else None
+
+    @property
+    def splitter(self) -> QSplitter | None:
+        sheet = self.current_sheet
+        return sheet.splitter if sheet else None
+
+    @property
+    def current_path(self) -> Path | None:
+        sheet = self.current_sheet
+        return sheet.current_path if sheet else None
+
+    @current_path.setter
+    def current_path(self, value: Path | None) -> None:
+        sheet = self.current_sheet
+        if sheet:
+            sheet.current_path = value
+            if value:
+                sheet.custom_title = value.name
+            self._update_tab_titles()
+
+    def add_sheet(self, content: str = "", path: Path | None = None, title: str = "") -> Sheet:
+        # Generate default title if not provided
+        if not title:
+            if path:
+                title = path.name
+            else:
+                existing_titles = set()
+                for i in range(self.stacked_widget.count()):
+                    widget = self.stacked_widget.widget(i)
+                    if hasattr(widget, "custom_title"):
+                        existing_titles.add(widget.custom_title)
+                n = 1
+                while f"Sheet {n}" in existing_titles:
+                    n += 1
+                title = f"Sheet {n}"
+
+        sheet = Sheet(self.settings, self, content, path, title)
+
+        # Apply current dark mode setting to the sheet
+        theme = DARK_THEME if self.dark_mode else LIGHT_THEME
+        sheet.set_theme(theme)
+
+        # Apply alternating background
+        sheet.editor.set_alternating_row_background_enabled(self.alternating_row_background)
+        sheet.results.set_alternating_row_background_enabled(self.alternating_row_background)
+        sheet.document_surface.set_alternating_row_background_enabled(self.alternating_row_background)
+
+        # Connect textChanged signals
+        sheet.editor.textChanged.connect(lambda: self._on_sheet_text_changed(sheet))
+        sheet.editor.textChanged.connect(self._save_tabs_state)
+
+        self.stacked_widget.addWidget(sheet)
+        index = self.tab_bar.addTab("") # Title set by _update_tab_titles
+
+        # Add custom close button to override low-contrast OS defaults on macOS/etc.
+        btn = QToolButton()
+        btn.setText("×")
+        btn.setObjectName("tabCloseButton")
+        btn.setToolTip("Close Tab")
+        btn.clicked.connect(lambda _, s=sheet: self.close_sheet(s))
+        self.tab_bar.setTabButton(index, QTabBar.ButtonPosition.LeftSide, None)
+        self.tab_bar.setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
+        self.tab_bar.setTabButton(index, QTabBar.ButtonPosition.RightSide, btn)
+
+        self._update_tab_titles()
+        self._update_tab_bar_visibility()
+
+        return sheet
+
+    def close_sheet(self, sheet: Sheet) -> None:
+        index = self.stacked_widget.indexOf(sheet)
+        if index != -1:
+            self.close_tab(index)
+
+    def add_new_empty_tab(self) -> None:
+        sheet = self.add_sheet("")
+        index = self.stacked_widget.indexOf(sheet)
+        self.stacked_widget.setCurrentIndex(index)
+        self.tab_bar.setCurrentIndex(index)
+        if self.editor:
+            self.editor.setFocus()
+
+    def close_tab(self, index: int) -> None:
+        if self.stacked_widget.count() <= 1:
+            if self.editor:
+                self.editor.clear()
+            return
+
+        widget = self.stacked_widget.widget(index)
+        self.stacked_widget.removeWidget(widget)
+        widget.deleteLater()
+
+        self.tab_bar.removeTab(index)
+
+        self._update_tab_titles()
+        self._update_tab_bar_visibility()
+        self._save_tabs_state()
+        self.recalculate()
+        self.refresh_autocomplete()
+
+    def switch_tab(self, index: int) -> None:
+        if 0 <= index < self.stacked_widget.count():
+            self.stacked_widget.setCurrentIndex(index)
+            self.recalculate()
+            self.refresh_autocomplete()
+            self._save_tabs_state()
+
+    def move_tab(self, from_index: int, to_index: int) -> None:
+        widget = self.stacked_widget.widget(from_index)
+        self.stacked_widget.removeWidget(widget)
+        self.stacked_widget.insertWidget(to_index, widget)
+        # Keep current synchronized
+        self.stacked_widget.setCurrentWidget(widget)
+        self.tab_bar.setCurrentIndex(to_index)
+        self._update_tab_titles()
+        self._save_tabs_state()
+
+    def rename_tab_dialog(self, index: int) -> None:
+        if 0 <= index < self.tab_bar.count():
+            sheet = self.stacked_widget.widget(index)
+            current_title = sheet.custom_title
+            new_title, ok = QInputDialog.getText(
+                self, "Rename Sheet", "Enter new name:", text=current_title
+            )
+            if ok and new_title.strip():
+                sheet.custom_title = new_title.strip()
+                self._update_tab_titles()
+                self._save_tabs_state()
+
+    def _update_tab_titles(self) -> None:
+        for i in range(self.tab_bar.count()):
+            sheet = self.stacked_widget.widget(i)
+            self.tab_bar.setTabText(i, sheet.custom_title)
+
+    def _update_tab_bar_visibility(self) -> None:
+        visible = self.tab_bar.count() > 1
+        self.tab_container.setVisible(visible)
+
+    def _on_sheet_text_changed(self, sheet: Sheet) -> None:
+        if sheet == self.current_sheet:
+            self._update_timer.start()
+            self.refresh_autocomplete()
+
+    def _save_tabs_state(self) -> None:
+        if self._loading_content:
+            return
+
+        count = self.stacked_widget.count()
+        self.settings.setValue("tabs/count", count)
+        self.settings.setValue("tabs/current", self.stacked_widget.currentIndex())
+
+        for i in range(count):
+            sheet = self.stacked_widget.widget(i)
+            self.settings.setValue(f"tabs/{i}/content", sheet.editor.toPlainText())
+            self.settings.setValue(f"tabs/{i}/path", str(sheet.current_path) if sheet.current_path else "")
+            self.settings.setValue(f"tabs/{i}/title", sheet.custom_title)
+
+        if self.editor:
+            self.settings.setValue(LAST_CONTENT_KEY, self.editor.toPlainText())
+
+        self.settings.sync()
+
+    def load_tabs(self) -> None:
+        self._loading_content = True
+
+        count = _settings_int(self.settings, "tabs/count", 0, minimum=0, maximum=100)
+        current_index = _settings_int(self.settings, "tabs/current", 0, minimum=0, maximum=100)
+
+        loaded_any = False
+        if count > 0:
+            for i in range(count):
+                content = self.settings.value(f"tabs/{i}/content", "")
+                path_str = self.settings.value(f"tabs/{i}/path", "")
+                title = self.settings.value(f"tabs/{i}/title", "")
+                path = Path(path_str) if path_str else None
+
+                if not isinstance(content, str):
+                    content = ""
+
+                self.add_sheet(content, path, title if isinstance(title, str) else "")
+                loaded_any = True
+
+        if not loaded_any:
+            legacy_content = self.settings.value(LAST_CONTENT_KEY, None)
+            if isinstance(legacy_content, str):
+                self.add_sheet(legacy_content)
+            else:
+                self.add_sheet(DEFAULT_DOCUMENT_TEXT)
+
+        if 0 <= current_index < self.stacked_widget.count():
+            self.stacked_widget.setCurrentIndex(current_index)
+            self.tab_bar.setCurrentIndex(current_index)
+        else:
+            self.stacked_widget.setCurrentIndex(0)
+            self.tab_bar.setCurrentIndex(0)
+
+        self._update_tab_bar_visibility()
+        self._update_tab_titles()
+        self._loading_content = False
 
     def _build_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         edit_menu = self.menuBar().addMenu("&Edit")
         help_menu = self.menuBar().addMenu("&Help")
+
+        new_tab_action = QAction("&New Tab", self)
+        new_tab_action.setShortcut(QKeySequence.StandardKey.AddTab)
+        new_tab_action.triggered.connect(self.add_new_empty_tab)
+        file_menu.addAction(new_tab_action)
+
+        close_tab_action = QAction("&Close Tab", self)
+        close_tab_action.setShortcut(QKeySequence.StandardKey.Close)
+        close_tab_action.triggered.connect(lambda: self.close_tab(self.tab_bar.currentIndex()))
+        file_menu.addAction(close_tab_action)
+
+        file_menu.addSeparator()
 
         open_action = QAction("&Import", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -744,7 +1066,7 @@ class MainWindow(QMainWindow):
 
         delete_all_action = QAction("&Delete All", self)
         delete_all_action.setShortcut(QKeySequence("Alt+Ctrl+Backspace"))
-        delete_all_action.triggered.connect(self.editor.clear)
+        delete_all_action.triggered.connect(lambda: self.editor.clear() if self.editor else None)
         edit_menu.addAction(delete_all_action)
 
         surround_action = QAction("Surround with &Parentheses", self)
@@ -759,7 +1081,7 @@ class MainWindow(QMainWindow):
         show_completions_action = QAction("Show &Completions", self)
         show_completions_action.setObjectName("showCompletionsAction")
         show_completions_action.setShortcuts(SHOW_COMPLETIONS_SHORTCUTS)
-        show_completions_action.triggered.connect(self.editor.open_completion_popup)
+        show_completions_action.triggered.connect(lambda: self.editor.open_completion_popup() if self.editor else None)
         edit_menu.addAction(show_completions_action)
 
         settings_action = QAction("&Settings...", self)
@@ -776,9 +1098,16 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         theme = DARK_THEME if self.dark_mode else LIGHT_THEME
-        self.document_surface.set_theme(theme)
-        self.results.set_theme(theme)
-        self.editor.highlighter.set_theme(theme)
+        for i in range(self.stacked_widget.count()):
+            self.stacked_widget.widget(i).set_theme(theme)
+
+        # Backgrounds and borders for visual tab bar separation
+        tab_bar_bg = theme.alternate_row_background.name()
+        active_tab_bg = theme.document_background.name()
+        tab_border_color = "rgba(255, 255, 255, 0.08)" if self.dark_mode else "rgba(0, 0, 0, 0.12)"
+        hover_bg = "rgba(255, 255, 255, 0.05)" if self.dark_mode else "rgba(0, 0, 0, 0.05)"
+        close_hover_bg = "rgba(255, 255, 255, 0.15)" if self.dark_mode else "rgba(0, 0, 0, 0.1)"
+
         self.setStyleSheet(
             f"""
             QMainWindow {{ background: {theme.document_background.name()}; }}
@@ -800,30 +1129,71 @@ class MainWindow(QMainWindow):
             }}
             QMenuBar {{ background: {theme.document_background.name()}; color: {theme.editor_text.name()}; }}
             QSplitter::handle {{ background: {theme.document_background.name()}; }}
+            #tabContainer {{
+                background: {tab_bar_bg};
+                border-bottom: 1px solid {tab_border_color};
+            }}
+            QTabBar {{
+                background: {tab_bar_bg};
+            }}
+            QTabBar::tab {{
+                background: transparent;
+                color: {theme.editor_text.name()};
+                padding: 6px 12px;
+                border: none;
+                font-family: 'SF Pro Text', -apple-system, sans-serif;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            QTabBar::tab:selected {{
+                background: {active_tab_bg};
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }}
+            QTabBar::tab:!selected {{
+                font-weight: normal;
+                color: rgba({theme.editor_text.red()}, {theme.editor_text.green()}, {theme.editor_text.blue()}, 0.65);
+            }}
+            QTabBar::tab:!selected:hover {{
+                background: {hover_bg};
+                color: rgba({theme.editor_text.red()}, {theme.editor_text.green()}, {theme.editor_text.blue()}, 0.85);
+            }}
+            QTabBar::close-button {{
+                image: none;
+                width: 0px;
+                height: 0px;
+            }}
+            #tabCloseButton {{
+                color: {theme.editor_text.name()};
+                background: transparent;
+                border: none;
+                font-family: 'SF Pro Text', -apple-system, sans-serif;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0px 4px;
+                margin-left: 4px;
+            }}
+            #tabCloseButton:hover {{
+                background: {close_hover_bg};
+                border-radius: 2px;
+            }}
+            QToolButton {{
+                background: transparent;
+                border: none;
+                color: {theme.editor_text.name()};
+                font-size: 16px;
+                padding: 2px 8px;
+            }}
+            QToolButton:hover {{
+                background: {hover_bg};
+                border-radius: 4px;
+            }}
             """
         )
 
-    def _sync_result_scroll(self) -> None:
-        self.results.verticalScrollBar().setValue(self.editor.verticalScrollBar().value())
-
-    def _sync_scrollbar_value(self, value: int) -> None:
-        self.document_scrollbar.setValue(value)
-        self._sync_result_scroll()
-        self.document_surface.update()
-
-    def _sync_scrollbar_range(self, minimum: int, maximum: int) -> None:
-        source = self.editor.verticalScrollBar()
-        self.document_scrollbar.setRange(minimum, maximum)
-        self.document_scrollbar.setPageStep(source.pageStep())
-        self.document_scrollbar.setSingleStep(source.singleStep())
-        self.document_scrollbar.setValue(source.value())
-
-    def _set_document_scroll(self, value: int) -> None:
-        self.editor.verticalScrollBar().setValue(value)
-        self.results.verticalScrollBar().setValue(value)
-        self.document_surface.update()
-
     def recalculate(self) -> None:
+        if not self.editor:
+            return
         self._evaluation_revision += 1
         self._pending_evaluation = (self._evaluation_revision, self.editor.toPlainText(), self.result_decimal_places)
         self._start_pending_evaluation()
@@ -848,6 +1218,8 @@ class MainWindow(QMainWindow):
         self._active_evaluations = max(0, self._active_evaluations - 1)
         if not isValid(self):
             return
+        if not self.editor:
+            return
         try:
             current_text = self.editor.toPlainText()
         except RuntimeError:
@@ -860,14 +1232,19 @@ class MainWindow(QMainWindow):
         self._start_pending_evaluation()
 
     def _apply_evaluation_results(self, displays: list[str]) -> None:
+        if not self.results:
+            return
         self.results.setPlainText("\n".join(displays))
         self.results.fit_to_content(displays)
         self.results.update_alternating_row_backgrounds()
-        self.document_surface.update()
-        self._sync_scrollbar_range(self.editor.verticalScrollBar().minimum(), self.editor.verticalScrollBar().maximum())
+        if self.document_surface:
+            self.document_surface.update()
+        if self.current_sheet:
+            self.current_sheet.sync_scrollbar_range()
 
     def refresh_autocomplete(self) -> None:
-        self.editor.set_dynamic_words(_document_variables(self.editor.toPlainText()))
+        if self.editor:
+            self.editor.set_dynamic_words(_document_variables(self.editor.toPlainText()))
 
     def _initial_document_text(self) -> str:
         value = self.settings.value(LAST_CONTENT_KEY, DEFAULT_DOCUMENT_TEXT)
@@ -876,8 +1253,9 @@ class MainWindow(QMainWindow):
     def _save_last_content(self) -> None:
         if self._loading_content:
             return
-        self.settings.setValue(LAST_CONTENT_KEY, self.editor.toPlainText())
-        self.settings.sync()
+        if self.editor:
+            self.settings.setValue(LAST_CONTENT_KEY, self.editor.toPlainText())
+            self.settings.sync()
 
     def _save_window_size(self) -> None:
         if self._loading_window_state:
@@ -893,14 +1271,17 @@ class MainWindow(QMainWindow):
         self._evaluation_revision += 1
         self._pending_evaluation = None
         self._evaluation_pool.clear()
+        self._save_tabs_state()
         self._save_window_size()
         super().closeEvent(event)
 
     def apply_settings(self) -> None:
         self.dark_mode = self._theme_mode_is_dark()
-        self.editor.set_alternating_row_background_enabled(self.alternating_row_background)
-        self.results.set_alternating_row_background_enabled(self.alternating_row_background)
-        self.document_surface.set_alternating_row_background_enabled(self.alternating_row_background)
+        for i in range(self.stacked_widget.count()):
+            sheet = self.stacked_widget.widget(i)
+            sheet.editor.set_alternating_row_background_enabled(self.alternating_row_background)
+            sheet.results.set_alternating_row_background_enabled(self.alternating_row_background)
+            sheet.document_surface.set_alternating_row_background_enabled(self.alternating_row_background)
         self._apply_style()
 
     def set_alternating_row_background(self, enabled: bool) -> None:
@@ -959,6 +1340,8 @@ class MainWindow(QMainWindow):
         return app.styleHints().colorScheme() == Qt.ColorScheme.Dark
 
     def current_result_text(self) -> str:
+        if not self.editor or not self.results:
+            return ""
         cursor = self.editor.textCursor()
         line = cursor.blockNumber()
         lines = self.results.toPlainText().splitlines()
@@ -968,6 +1351,8 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(_clipboard_result_text(self.current_result_text()))
 
     def copy_all(self) -> None:
+        if not self.editor or not self.results:
+            return
         source = self.editor.toPlainText().splitlines()
         results = self.results.toPlainText().splitlines()
         rows = []
@@ -977,6 +1362,8 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(rows))
 
     def surround_with_parentheses(self) -> None:
+        if not self.editor:
+            return
         cursor = self.editor.textCursor()
         if not cursor.hasSelection():
             cursor.select(QTextCursor.SelectionType.LineUnderCursor)
@@ -988,9 +1375,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.current_path = Path(path)
-        self.editor.setPlainText(normalize_numi_import(self.current_path.read_text(encoding="utf-8")))
+        if self.editor:
+            self.editor.setPlainText(normalize_numi_import(self.current_path.read_text(encoding="utf-8")))
 
     def export_file(self) -> None:
+        if not self.editor:
+            return
         start = str(self.current_path) if self.current_path else "Untitled.numi"
         path, _ = QFileDialog.getSaveFileName(self, "Export", start, "Numi files (*.numi);;Text files (*.txt);;All files (*)")
         if not path:
@@ -1002,6 +1392,8 @@ class MainWindow(QMainWindow):
         self.current_path = target
 
     def print_document(self) -> None:
+        if not self.editor:
+            return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         dialog = QPrintDialog(printer, self)
         if dialog.exec():

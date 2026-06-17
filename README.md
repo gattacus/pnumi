@@ -16,6 +16,7 @@ Pnumi is an original Python/PySide6 rewrite of a Numi-style natural language cal
 - Functions and formatting: use math helpers such as `sqrt`, `round`, trigonometry, and base conversions like hex or binary.
 - Autocomplete and highlighting: get completions for functions, units, currencies, timezones, and document variables.
 - Import, export, copy, and print: move `.numi` or text documents in and out of the app from the menu.
+- Multi-sheet tabs: manage multiple calculation sheets using a top tab bar (reorderable, dynamically hidden when only a single tab is open) with session persistence.
 - Light and dark themes: switch editor themes and alternating row backgrounds in settings.
 - macOS and Windows app builds: package Pnumi as a local desktop application with the included build scripts.
 

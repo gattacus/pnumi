@@ -728,6 +728,17 @@ class Sheet(QWidget):
         self._sync_scrollbar_range(source.minimum(), source.maximum())
 
 
+class TabBar(QTabBar):
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            index = self.tabAt(event.position().toPoint())
+            if index != -1:
+                self.tabCloseRequested.emit(index)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: QSettings | None = None) -> None:
         super().__init__()
@@ -748,7 +759,7 @@ class MainWindow(QMainWindow):
         self.resize(_settings_size(self.settings, WINDOW_SIZE_KEY, DEFAULT_WINDOW_SIZE))
 
         # Set up Tab Bar
-        self.tab_bar = QTabBar()
+        self.tab_bar = TabBar()
         self.tab_bar.setTabsClosable(False)
         self.tab_bar.setMovable(True)
         self.tab_bar.tabCloseRequested.connect(self.close_tab)
@@ -905,6 +916,18 @@ class MainWindow(QMainWindow):
             self.editor.setFocus()
 
     def close_tab(self, index: int) -> None:
+        sheet = self.stacked_widget.widget(index)
+        if sheet and sheet.editor and sheet.editor.toPlainText().strip():
+            reply = QMessageBox.question(
+                self,
+                "Close Tab",
+                "Are you sure you want to close this tab?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         if self.stacked_widget.count() <= 1:
             if self.editor:
                 self.editor.clear()

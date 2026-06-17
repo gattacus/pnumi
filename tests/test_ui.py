@@ -512,7 +512,10 @@ def _format_color_at(formats, index: int) -> QColor | None:
     return None
 
 
-def test_add_and_close_tab(qtbot, tmp_path) -> None:
+def test_add_and_close_tab(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+
     window = _window_with_test_settings(qtbot, tmp_path)
     # Initially 1 tab
     assert window.stacked_widget.count() == 1
@@ -528,6 +531,105 @@ def test_add_and_close_tab(qtbot, tmp_path) -> None:
     window.close_tab(1)
     assert window.stacked_widget.count() == 1
     assert window.tab_container.isHidden()
+
+
+def test_close_tab_confirmation_yes(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    window.stacked_widget.widget(1).editor.setPlainText("some content")
+    assert window.stacked_widget.count() == 2
+
+    question_called = False
+    def mock_question(parent, title, text, buttons, defaultButton):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    window.close_tab(1)
+
+    assert question_called
+    assert window.stacked_widget.count() == 1
+
+
+def test_close_tab_confirmation_no(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    window.stacked_widget.widget(1).editor.setPlainText("some content")
+    assert window.stacked_widget.count() == 2
+
+    question_called = False
+    def mock_question(parent, title, text, buttons, defaultButton):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    window.close_tab(1)
+
+    assert question_called
+    assert window.stacked_widget.count() == 2
+
+
+def test_close_empty_tab_no_confirmation(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    assert window.stacked_widget.count() == 2
+
+    question_called = False
+    def mock_question(*args, **kwargs):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    window.close_tab(1)
+
+    assert not question_called
+    assert window.stacked_widget.count() == 1
+
+
+def test_close_tab_confirmation_on_last_tab_yes(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.editor.setPlainText("some text")
+    assert window.stacked_widget.count() == 1
+
+    question_called = False
+    def mock_question(*args, **kwargs):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    window.close_tab(0)
+
+    assert question_called
+    assert window.stacked_widget.count() == 1
+    assert window.editor.toPlainText() == ""
+
+
+def test_close_tab_confirmation_on_last_tab_no(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.editor.setPlainText("some text")
+    assert window.stacked_widget.count() == 1
+
+    question_called = False
+    def mock_question(*args, **kwargs):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+    window.close_tab(0)
+
+    assert question_called
+    assert window.stacked_widget.count() == 1
+    assert window.editor.toPlainText() == "some text"
 
 
 def test_tab_switching(qtbot, tmp_path) -> None:
@@ -569,7 +671,10 @@ def test_tab_persistence(qtbot, tmp_path) -> None:
     assert reloaded.editor.toPlainText() == "second tab"
 
 
-def test_close_last_tab_resets(qtbot, tmp_path) -> None:
+def test_close_last_tab_resets(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+
     window = _window_with_test_settings(qtbot, tmp_path)
     window.editor.setPlainText("some text")
     assert window.stacked_widget.count() == 1
@@ -605,4 +710,64 @@ def test_reorder_tabs_keeps_titles(qtbot, tmp_path) -> None:
     # Check that names are preserved and didn't auto-increment/re-index
     assert window.tab_bar.tabText(0) == "Sheet 2"
     assert window.tab_bar.tabText(1) == "Sheet 1"
+
+
+def test_tab_middle_click_closes_tab(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    window.stacked_widget.widget(1).editor.setPlainText("some content")
+    assert window.stacked_widget.count() == 2
+
+    # Click the middle mouse button on the tab bar at the second tab's center position
+    rect = window.tab_bar.tabRect(1)
+    center = rect.center()
+    qtbot.mouseClick(window.tab_bar, Qt.MouseButton.MiddleButton, pos=center)
+
+    # Should have closed the second tab
+    assert window.stacked_widget.count() == 1
+
+
+def test_tab_middle_click_cancel(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    window.stacked_widget.widget(1).editor.setPlainText("some content")
+    assert window.stacked_widget.count() == 2
+
+    # Click the middle mouse button on the tab bar at the second tab's center position
+    rect = window.tab_bar.tabRect(1)
+    center = rect.center()
+    qtbot.mouseClick(window.tab_bar, Qt.MouseButton.MiddleButton, pos=center)
+
+    # Should not have closed the second tab
+    assert window.stacked_widget.count() == 2
+
+
+def test_tab_middle_click_empty_no_confirmation(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    question_called = False
+    def mock_question(*args, **kwargs):
+        nonlocal question_called
+        question_called = True
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", mock_question)
+
+    window = _window_with_test_settings(qtbot, tmp_path)
+    window.add_new_empty_tab()
+    assert window.stacked_widget.count() == 2
+
+    # Click the middle mouse button on the tab bar at the second tab's center position
+    rect = window.tab_bar.tabRect(1)
+    center = rect.center()
+    qtbot.mouseClick(window.tab_bar, Qt.MouseButton.MiddleButton, pos=center)
+
+    # Should have closed the second tab without triggering confirmation
+    assert not question_called
+    assert window.stacked_widget.count() == 1
 

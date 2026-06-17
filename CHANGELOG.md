@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-06-18
+
+### Added
+
+- A confirmation dialog before closing a tab (bypassed if the sheet is empty).
+- Support for closing tabs by middle-clicking on them in the tab bar.
+
 ## 0.2.0 - 2026-06-17
 
 ### Added

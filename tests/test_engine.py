@@ -8,7 +8,22 @@ from pnumi.rates import StaticRateProvider
 
 
 def context() -> DocumentContext:
-    return DocumentContext(rate_provider=StaticRateProvider({("USD", "EUR"): Decimal("0.9"), ("USD", "CAD"): Decimal("1.25")}))
+    return DocumentContext(
+        rate_provider=StaticRateProvider(
+            {
+                ("USD", "EUR"): Decimal("0.9"),
+                ("USD", "CAD"): Decimal("1.25"),
+                ("RUB", "USD"): Decimal("0.012"),
+                ("JPY", "CHF"): Decimal("0.0055"),
+                ("INR", "USD"): Decimal("0.012"),
+                ("PLN", "USD"): Decimal("0.25"),
+                ("SEK", "USD"): Decimal("0.095"),
+                ("NOK", "USD"): Decimal("0.092"),
+                ("XMR", "CHF"): Decimal("140"),
+                ("LTC", "USD"): Decimal("85"),
+            }
+        )
+    )
 
 
 def test_arithmetic_and_word_operators() -> None:
@@ -225,6 +240,29 @@ def test_currency_conversion() -> None:
     ctx = context()
     assert evaluate_line("$30 in EUR", ctx).display == "27 EUR"
     assert evaluate_line("$30 CAD + 5 USD", ctx).ok
+
+
+def test_currency_registry_accepts_iso_names_signs_and_crypto() -> None:
+    ctx = context()
+
+    assert evaluate_line("100 RUB in USD", ctx).display == "1.2 USD"
+    assert evaluate_line("50 roubles in euro", ctx).display == "0.54 EUR"
+    assert evaluate_line("100 yen in CHF", ctx).display == "0.55 CHF"
+    assert evaluate_line("¥100 in CHF", ctx).display == "0.55 CHF"
+    assert evaluate_line("₹2500 in USD", ctx).display == "30 USD"
+    assert evaluate_line("2500 rupees in USD", ctx).display == "30 USD"
+    assert evaluate_line("10 zloty in USD", ctx).display == "2.5 USD"
+    assert evaluate_line("10 krona in USD", ctx).display == "0.95 USD"
+    assert evaluate_line("10 krone in USD", ctx).display == "0.92 USD"
+    assert evaluate_line("1 litecoin in USD", ctx).display == "85 USD"
+    assert evaluate_line("1 XMR in CHF", ctx).display == "140 CHF"
+
+
+def test_valid_currency_with_missing_rate_reports_rate_error() -> None:
+    result = evaluate_line("1 AED in USD", context())
+
+    assert not result.ok
+    assert result.diagnostics == ["No rate for AED/USD"]
 
 
 def test_document_evaluation() -> None:

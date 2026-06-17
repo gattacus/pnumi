@@ -13,10 +13,10 @@ authors = [{ name = "Pnumi contributors" }]
 dependencies = [
   "PySide6>=6.7,<7",
   "lark>=1.1,<2",
-  "httpx>=0.27,<1",
   "platformdirs>=4,<5",
   "python-dateutil>=2.9,<3",
   "tzdata>=2024.1",
+  "yfinance>=0.2,<1",
 ]
 
 [project.optional-dependencies]

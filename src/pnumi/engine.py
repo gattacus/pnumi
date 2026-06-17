@@ -10,31 +10,13 @@ from zoneinfo import ZoneInfo
 
 from dateutil import parser as date_parser
 
-from .formatting import format_value
+from .currencies import CURRENCY_ALIASES, CURRENCY_SIGNS, currency_code
+from .formatting import DEFAULT_DECIMAL_PLACES, format_value
 from .models import DocumentContext, DocumentResult, LineResult, Value
 from .rates import default_rate_provider
 from .units import SCALE_SUFFIXES, canonical_unit, convert_magnitude
 
 getcontext().prec = 28
-
-CURRENCY_ALIASES = {
-    "$": "USD",
-    "usd": "USD",
-    "dollar": "USD",
-    "dollars": "USD",
-    "€": "EUR",
-    "eur": "EUR",
-    "euro": "EUR",
-    "euros": "EUR",
-    "£": "GBP",
-    "gbp": "GBP",
-    "cad": "CAD",
-    "chf": "CHF",
-    "btc": "BTC",
-    "bitcoin": "BTC",
-    "eth": "ETH",
-    "ethereum": "ETH",
-}
 
 TIMEZONES = {
     "utc": "UTC",
@@ -54,16 +36,17 @@ CONVERSION_RE = re.compile(r"\s+(?:in|into|as|to)\s+", re.IGNORECASE)
 ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
 DECIMAL_NUMBER_PATTERN = r"\d+(?:[ ,']\d{3})*(?:\.\d+)?|\d*\.\d+"
 COMPOUND_UNIT_SEGMENT_PATTERN = r"[A-Za-z°][A-Za-z0-9°]*"
+CURRENCY_SIGN_PATTERN = "[" + re.escape("".join(sorted(CURRENCY_SIGNS))) + "]"
 THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'](?=\d{3}(?:\D|$))")
 PERCENT_VALUE_RE = re.compile(rf"^(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*%$")
 COMPOUND_VALUE_RE = re.compile(
     rf"^(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>{COMPOUND_UNIT_SEGMENT_PATTERN}(?:\s*/\s*{COMPOUND_UNIT_SEGMENT_PATTERN})+)$"
 )
 NUMBER_UNIT_RE = re.compile(
-    rf"(?P<prefix>[$€£])?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>[A-Za-z°][A-Za-z0-9° ]*)?"
+    rf"(?P<prefix>{CURRENCY_SIGN_PATTERN})?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>{CURRENCY_SIGN_PATTERN}|[A-Za-z°][A-Za-z0-9° ]*)?"
 )
 VALUE_TOKEN_RE = re.compile(
-    rf"(?P<prefix>[$€£])?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>%|[A-Za-z°][A-Za-z0-9°]*(?:\s+[A-Za-z°][A-Za-z0-9°]*)?(?:\s*/\s*[A-Za-z°][A-Za-z0-9°]*)*)?"
+    rf"(?P<prefix>{CURRENCY_SIGN_PATTERN})?\s*(?P<num>(?:0x[0-9a-fA-F]+|0o[0-7]+|0b[01]+|{DECIMAL_NUMBER_PATTERN}))\s*(?P<suffix>%|{CURRENCY_SIGN_PATTERN}|[A-Za-z°][A-Za-z0-9°]*(?:\s+[A-Za-z°][A-Za-z0-9°]*){{0,2}}(?:\s*/\s*[A-Za-z°][A-Za-z0-9°]*)*)?"
 )
 
 
@@ -71,6 +54,8 @@ def evaluate_document(text: str, options: dict | None = None) -> DocumentResult:
     context = DocumentContext(rate_provider=(options or {}).get("rate_provider") if options else None)
     if context.rate_provider is None:
         context.rate_provider = default_rate_provider()
+    if options and "decimal_places" in options:
+        context.settings["decimal_places"] = _decimal_places_option(options["decimal_places"])
     results: list[LineResult] = []
     for line in text.splitlines():
         result = evaluate_line(line, context)
@@ -105,7 +90,7 @@ def evaluate_line(text: str, context: DocumentContext | None = None) -> LineResu
             if target_name in {"em", "ppi"} and value.magnitude is not None:
                 context.settings[target_name] = value.magnitude
         result.value = value
-        result.display = format_value(value, scientific=scientific)
+        result.display = format_value(value, scientific=scientific, max_decimal_places=context.settings.get("decimal_places", DEFAULT_DECIMAL_PLACES))
         context.remember(value)
         return result
     except Exception as exc:
@@ -123,6 +108,14 @@ def _strip_formatting(text: str) -> str:
         if re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9 _-]*\s*", left):
             text = right
     return text.strip()
+
+
+def _decimal_places_option(value: object) -> int:
+    try:
+        places = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DECIMAL_PLACES
+    return max(0, min(places, 20))
 
 
 def _evaluate_expression(expression: str, context: DocumentContext) -> tuple[Value, bool]:
@@ -849,12 +842,7 @@ def _strip_thousands_separators(text: str) -> str:
 
 
 def _currency_code(text: str | None) -> str | None:
-    if not text:
-        return None
-    clean = text.strip()
-    if clean.upper() in {"USD", "EUR", "CAD", "GBP", "CHF", "JPY", "AUD", "BTC", "ETH", "SOL", "DOGE"}:
-        return clean.upper()
-    return CURRENCY_ALIASES.get(clean.lower())
+    return currency_code(text)
 
 
 def _try_time_expression(expression: str) -> Value | None:

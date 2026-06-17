@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import httpx
 from platformdirs import user_cache_dir
+
+from .currencies import CRYPTO_CODES, ISO_4217_CODES
 
 
 class RateProvider:
@@ -39,7 +39,7 @@ class StaticRateProvider(RateProvider):
         raise LookupError(f"No rate for {base}/{quote}")
 
 
-class FrankfurterRateProvider(RateProvider):
+class YahooFinanceRateProvider(RateProvider):
     def __init__(self, cache_dir: Path | None = None, ttl: timedelta = timedelta(hours=8)) -> None:
         self.cache_dir = cache_dir or Path(user_cache_dir("Pnumi", "Pnumi"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -53,19 +53,13 @@ class FrankfurterRateProvider(RateProvider):
         cached = self._cached(base, quote, at)
         if cached is not None:
             return cached
-        url = f"https://api.frankfurter.dev/v2/rate/{base}/{quote}"
-        if at is not None:
-            url = f"{url}?date={at.isoformat()}"
-        response = httpx.get(url, timeout=8)
-        response.raise_for_status()
-        data = response.json()
-        rate = Decimal(str(data["rate"]))
+        rate = self._fetch_rate(base, quote, at)
         self._write_cache(base, quote, at, {"rate": str(rate), "fetched_at": datetime.now(timezone.utc).isoformat()})
         return rate
 
     def _path(self, base: str, quote: str, at: date | None) -> Path:
         date_key = at.isoformat() if at else "latest"
-        return self.cache_dir / f"frankfurter-{base}-{quote}-{date_key}.json"
+        return self.cache_dir / f"yahoo-finance-{base}-{quote}-{date_key}.json"
 
     def _cached(self, base: str, quote: str, at: date | None) -> Decimal | None:
         path = self._path(base, quote, at)
@@ -83,6 +77,68 @@ class FrankfurterRateProvider(RateProvider):
 
     def _write_cache(self, base: str, quote: str, at: date | None, data: dict[str, Any]) -> None:
         self._path(base, quote, at).write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _fetch_rate(self, base: str, quote: str, at: date | None) -> Decimal:
+        direct_symbols = _yahoo_symbols(base, quote)
+        for symbol in direct_symbols:
+            price = self._fetch_symbol_price(symbol, at)
+            if price is not None:
+                return price
+        if base != "USD" and quote != "USD":
+            base_usd = self.get_rate(base, "USD", at)
+            quote_usd = self.get_rate(quote, "USD", at)
+            return base_usd / quote_usd
+        raise LookupError(f"No Yahoo Finance rate for {base}/{quote}")
+
+    def _fetch_symbol_price(self, symbol: str, at: date | None) -> Decimal | None:
+        try:
+            import yfinance as yf
+        except ImportError as exc:
+            raise LookupError("yfinance is not installed") from exc
+        ticker = yf.Ticker(symbol)
+        if at is None:
+            price = self._latest_price(ticker)
+            return Decimal(str(price)) if price is not None else None
+        price = self._historical_price(ticker, at)
+        return Decimal(str(price)) if price is not None else None
+
+    def _latest_price(self, ticker: Any) -> Any | None:
+        fast_info = getattr(ticker, "fast_info", None)
+        if fast_info:
+            try:
+                price = fast_info.get("last_price")
+            except AttributeError:
+                price = getattr(fast_info, "last_price", None)
+            if price is not None:
+                return price
+        history = ticker.history(period="5d", interval="1d", auto_adjust=False)
+        return _last_close(history)
+
+    def _historical_price(self, ticker: Any, at: date) -> Any | None:
+        history = ticker.history(start=at.isoformat(), end=(at + timedelta(days=1)).isoformat(), interval="1d", auto_adjust=False)
+        return _last_close(history)
+
+
+def _last_close(history: Any) -> Any | None:
+    if history is None or getattr(history, "empty", False):
+        return None
+    try:
+        close = history["Close"].dropna()
+        if getattr(close, "empty", False):
+            return None
+        return close.iloc[-1]
+    except Exception:
+        return None
+
+
+def _yahoo_symbols(base: str, quote: str) -> list[str]:
+    base = base.upper()
+    quote = quote.upper()
+    if base in ISO_4217_CODES and quote in ISO_4217_CODES:
+        return [f"{base}{quote}=X"]
+    if base in CRYPTO_CODES or quote in CRYPTO_CODES:
+        return [f"{base}-{quote}"]
+    return []
 
 
 class CompositeRateProvider(RateProvider):
@@ -110,31 +166,4 @@ def default_rate_provider() -> RateProvider:
             ("ETH", "USD"): Decimal("3500"),
         }
     )
-    providers: list[RateProvider] = [FrankfurterRateProvider(), fallback]
-    if os.environ.get("COINGECKO_API_KEY"):
-        providers.insert(0, CoinGeckoRateProvider(os.environ["COINGECKO_API_KEY"]))
-    return CompositeRateProvider(providers)
-
-
-class CoinGeckoRateProvider(RateProvider):
-    COIN_IDS = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "DOGE": "dogecoin"}
-
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-
-    def get_rate(self, base: str, quote: str, at: date | None = None) -> Decimal:
-        if at is not None:
-            raise LookupError("CoinGecko provider only supports latest rates")
-        coin = self.COIN_IDS.get(base.upper())
-        if coin is None:
-            raise LookupError(f"Unsupported crypto currency: {base}")
-        quote = quote.lower()
-        response = httpx.get(
-            "https://pro-api.coingecko.com/api/v3/simple/price",
-            params={"ids": coin, "vs_currencies": quote, "include_last_updated_at": "true"},
-            headers={"x-cg-pro-api-key": self.api_key},
-            timeout=8,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return Decimal(str(data[coin][quote]))
+    return CompositeRateProvider([YahooFinanceRateProvider(), fallback])

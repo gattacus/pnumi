@@ -17,6 +17,7 @@ from pnumi.ui import (
     KEYWORD_HIGHLIGHT_COLOR,
     LAST_CONTENT_KEY,
     LIGHT_THEME,
+    RESULT_DECIMAL_PLACES_KEY,
     SHOW_COMPLETIONS_SHORTCUTS,
     VARIABLE_HIGHLIGHT_COLOR,
     SettingsDialog,
@@ -189,6 +190,24 @@ def test_dark_mode_setting_is_persisted_and_applied(qtbot, tmp_path) -> None:
     assert reloaded.document_surface.theme == DARK_THEME
 
 
+def test_result_decimal_places_setting_is_persisted_and_display_only(qtbot, tmp_path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.editor.setPlainText("x = 1 / 3\nx * 3")
+
+    window.set_result_decimal_places(2)
+
+    qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["0.33", "1"], timeout=1000)
+    assert window.settings.value(RESULT_DECIMAL_PLACES_KEY) == 2
+    settings.sync()
+
+    reloaded = MainWindow(settings=QSettings(str(settings_path), QSettings.Format.IniFormat))
+    qtbot.addWidget(reloaded)
+    assert reloaded.result_decimal_places == 2
+
+
 def test_window_size_is_persisted_between_sessions(qtbot, tmp_path) -> None:
     settings_path = tmp_path / "settings.ini"
     settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
@@ -237,16 +256,19 @@ def test_editor_and_results_share_one_visible_vertical_scrollbar(qtbot, tmp_path
     assert window.document_surface.layout().spacing() == 0
 
 
-def test_settings_dialog_exposes_alternating_row_background(qtbot) -> None:
-    dialog = SettingsDialog(False, True)
+def test_settings_dialog_exposes_display_settings(qtbot) -> None:
+    dialog = SettingsDialog(False, True, 4)
     qtbot.addWidget(dialog)
 
     assert not dialog.alternating_row_background_enabled()
     assert dialog.dark_mode_enabled()
+    assert dialog.result_decimal_places() == 4
     dialog.alternating_row_background_checkbox.setChecked(True)
     dialog.dark_mode_checkbox.setChecked(False)
+    dialog.result_decimal_places_spinbox.setValue(6)
     assert dialog.alternating_row_background_enabled()
     assert not dialog.dark_mode_enabled()
+    assert dialog.result_decimal_places() == 6
 
 
 def test_comments_and_markdown_use_distinct_high_contrast_color(qtbot) -> None:

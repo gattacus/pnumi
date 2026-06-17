@@ -5,8 +5,10 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from .models import Value
 
+DEFAULT_DECIMAL_PLACES = 10
 
-def clean_decimal(value: Decimal, max_places: int = 10) -> str:
+
+def clean_decimal(value: Decimal, max_places: int = DEFAULT_DECIMAL_PLACES) -> str:
     if value.is_nan():
         return "NaN"
     if value.is_infinite():
@@ -35,7 +37,7 @@ def group_thousands(text: str) -> str:
     return f"{sign}{grouped}{separator}{fraction}"
 
 
-def format_value(value: Value | None, scientific: bool = False) -> str:
+def format_value(value: Value | None, scientific: bool = False, max_decimal_places: int = DEFAULT_DECIMAL_PLACES) -> str:
     if value is None:
         return ""
     if value.text is not None:
@@ -47,13 +49,13 @@ def format_value(value: Value | None, scientific: bool = False) -> str:
             return value.when.isoformat()
     if value.duration is not None:
         seconds = Decimal(str(value.duration.total_seconds()))
-        return f"{clean_decimal(seconds)} sec"
+        return f"{clean_decimal(seconds, max_decimal_places)} sec"
     if value.magnitude is None:
         return ""
     if scientific:
-        base = f"{value.magnitude:.10E}".replace("E+", "e").replace("E", "e")
+        base = f"{value.magnitude:.{max_decimal_places}E}".replace("E+", "e").replace("E", "e")
     else:
-        base = group_thousands(clean_decimal(value.magnitude))
+        base = group_thousands(clean_decimal(value.magnitude, max_decimal_places))
     if value.currency:
         return f"{base} {value.currency}"
     if value.unit:

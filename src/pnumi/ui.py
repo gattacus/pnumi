@@ -15,18 +15,22 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QLabel,
     QHBoxLayout,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QScrollBar,
+    QSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
-from .engine import CURRENCY_ALIASES, TIMEZONES
+from .currencies import CURRENCY_ALIASES, CURRENCY_CODES
+from .engine import TIMEZONES
 from .engine import evaluate_document
+from .formatting import DEFAULT_DECIMAL_PLACES
 from .numi_import import normalize_numi_import
 from .units import ALIASES as UNIT_ALIASES
 
@@ -39,6 +43,7 @@ KEYWORD_HIGHLIGHT_COLOR = QColor("#6b2f10")
 ALTERNATING_ROW_BACKGROUND_KEY = "editor/alternatingRowBackground"
 DARK_MODE_KEY = "editor/darkMode"
 LAST_CONTENT_KEY = "editor/lastContent"
+RESULT_DECIMAL_PLACES_KEY = "results/decimalPlaces"
 WINDOW_SIZE_KEY = "window/size"
 SETTINGS_ORGANIZATION = "gattacus.uk"
 SETTINGS_ORGANIZATION_DOMAIN = "uk.gattacus"
@@ -304,13 +309,28 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, alternating_row_background: bool, dark_mode: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        alternating_row_background: bool,
+        dark_mode: bool,
+        result_decimal_places: int = DEFAULT_DECIMAL_PLACES,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.alternating_row_background_checkbox = QCheckBox("Alternating row background")
         self.alternating_row_background_checkbox.setChecked(alternating_row_background)
         self.dark_mode_checkbox = QCheckBox("Dark mode")
         self.dark_mode_checkbox.setChecked(dark_mode)
+        self.result_decimal_places_spinbox = QSpinBox()
+        self.result_decimal_places_spinbox.setRange(0, 20)
+        self.result_decimal_places_spinbox.setValue(result_decimal_places)
+        decimal_places_row = QWidget()
+        decimal_places_layout = QHBoxLayout(decimal_places_row)
+        decimal_places_layout.setContentsMargins(0, 0, 0, 0)
+        decimal_places_layout.addWidget(QLabel("Result decimal places"))
+        decimal_places_layout.addWidget(self.result_decimal_places_spinbox)
+        decimal_places_layout.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -318,6 +338,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.alternating_row_background_checkbox)
         layout.addWidget(self.dark_mode_checkbox)
+        layout.addWidget(decimal_places_row)
         layout.addWidget(buttons)
 
     def alternating_row_background_enabled(self) -> bool:
@@ -325,6 +346,9 @@ class SettingsDialog(QDialog):
 
     def dark_mode_enabled(self) -> bool:
         return self.dark_mode_checkbox.isChecked()
+
+    def result_decimal_places(self) -> int:
+        return self.result_decimal_places_spinbox.value()
 
 
 def _clipboard_result_text(text: str) -> str:
@@ -391,17 +415,7 @@ STATIC_COMPLETIONS = sorted(
         "years",
         *UNIT_ALIASES.keys(),
         *CURRENCY_ALIASES.keys(),
-        "USD",
-        "EUR",
-        "CAD",
-        "GBP",
-        "CHF",
-        "JPY",
-        "AUD",
-        "BTC",
-        "ETH",
-        "SOL",
-        "DOGE",
+        *CURRENCY_CODES,
         *TIMEZONES.keys(),
     },
     key=str.casefold,
@@ -502,6 +516,7 @@ class MainWindow(QMainWindow):
         self.settings = settings or _app_settings()
         self.alternating_row_background = _settings_bool(self.settings, ALTERNATING_ROW_BACKGROUND_KEY, True)
         self.dark_mode = _settings_bool(self.settings, DARK_MODE_KEY, False)
+        self.result_decimal_places = _settings_int(self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20)
         self._loading_window_state = True
         self._loading_content = True
         self.resize(_settings_size(self.settings, WINDOW_SIZE_KEY, DEFAULT_WINDOW_SIZE))
@@ -635,7 +650,7 @@ class MainWindow(QMainWindow):
         self.document_surface.update()
 
     def recalculate(self) -> None:
-        document = evaluate_document(self.editor.toPlainText())
+        document = evaluate_document(self.editor.toPlainText(), {"decimal_places": self.result_decimal_places})
         self.results.setPlainText("\n".join(document.displays))
         self.results.update_alternating_row_backgrounds()
         self.document_surface.update()
@@ -684,11 +699,17 @@ class MainWindow(QMainWindow):
         self.settings.setValue(DARK_MODE_KEY, enabled)
         self.apply_settings()
 
+    def set_result_decimal_places(self, places: int) -> None:
+        self.result_decimal_places = max(0, min(int(places), 20))
+        self.settings.setValue(RESULT_DECIMAL_PLACES_KEY, self.result_decimal_places)
+        self.recalculate()
+
     def open_settings_dialog(self) -> None:
-        dialog = SettingsDialog(self.alternating_row_background, self.dark_mode, self)
+        dialog = SettingsDialog(self.alternating_row_background, self.dark_mode, self.result_decimal_places, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_alternating_row_background(dialog.alternating_row_background_enabled())
             self.set_dark_mode(dialog.dark_mode_enabled())
+            self.set_result_decimal_places(dialog.result_decimal_places())
 
     def current_result_text(self) -> str:
         cursor = self.editor.textCursor()
@@ -773,6 +794,15 @@ def _settings_bool(settings: QSettings, key: str, default: bool) -> bool:
     if isinstance(value, str):
         return value.lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _settings_int(settings: QSettings, key: str, default: int, minimum: int, maximum: int) -> int:
+    value = settings.value(key, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
 
 
 def _settings_size(settings: QSettings, key: str, default: QSize) -> QSize:

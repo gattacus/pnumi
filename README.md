@@ -44,6 +44,10 @@ python -m venv .venv
 .venv/bin/pytest
 ```
 
+## License
+
+Pnumi is released under the MIT License. See [LICENSE](LICENSE).
+
 ## Build macOS App
 
 ```sh

@@ -18,6 +18,7 @@ mkdir -p "$PYINSTALLER_CONFIG_DIR" "$ROOT_DIR/build/pyinstaller" "$ROOT_DIR/dist
   --clean \
   --noconfirm \
   --icon "$ROOT_DIR/assets/pnumi.icns" \
+  --add-data "$ROOT_DIR/assets/pnumi-icon.png:assets" \
   --osx-bundle-identifier uk.gattacus.Pnumi \
   --paths src \
   --distpath "$ROOT_DIR/dist" \

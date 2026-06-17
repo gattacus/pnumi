@@ -19,6 +19,7 @@ def test_macos_icon_asset_is_present_and_used_by_build_script() -> None:
     assert source_png.is_file()
     assert icon.read_bytes().startswith(b"icns")
     assert "assets/pnumi.icns" in build_script.read_text(encoding="utf-8")
+    assert "assets/pnumi-icon.png:assets" in build_script.read_text(encoding="utf-8")
     assert "--osx-bundle-identifier uk.gattacus.Pnumi" in build_script.read_text(encoding="utf-8")
 
 

@@ -335,7 +335,7 @@ class ResultPane(StripedPlainTextEdit):
         super().mouseReleaseEvent(event)
 
     def _show_copied_tooltip(self, position: QPoint) -> None:
-        QToolTip.showText(position, "Copied", self.viewport(), self.viewport().rect(), 1200)
+        QToolTip.showText(position, "Copied!", self.viewport(), self.viewport().rect(), 1200)
 
     def _paint_hovered_result_pill(self) -> None:
         if self._hovered_result_line is None:

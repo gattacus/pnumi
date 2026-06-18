@@ -155,7 +155,7 @@ def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path, monkeypatch
     assert QApplication.clipboard().text() == "120000 cm"
     assert tooltip_calls
     _, text, widget, _, msec_display_time = tooltip_calls[-1]
-    assert text == "Copied"
+    assert text == "Copied!"
     assert widget == window.results.viewport()
     assert msec_display_time == 1200
 

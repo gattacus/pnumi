@@ -12,7 +12,7 @@
 - Prohibited variable assignments to reserved keyword names (e.g. `prev`, `sum`, `pi`), displaying detailed inline error messages in red and editor hover tooltips.
 - A warning system (red squiggly underlines and hover tooltips) for variables that shadow built-in units or currencies (e.g. `m = 5`).
 - Autocomplete suggestion kinds for variables, functions, constants, units, currencies, timezones, and keywords.
-- A "Copied" tooltip after clicking a result to copy it.
+- A "Copied!" tooltip after clicking a result to copy it.
 
 ### Changed
 

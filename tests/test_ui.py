@@ -12,7 +12,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QColor, QKeySequence, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from pnumi.rates import StaticRateProvider
 from pnumi.ui import (
@@ -31,6 +31,7 @@ from pnumi.ui import (
     THEME_MODE_LIGHT,
     THEME_MODE_SYSTEM,
     VARIABLE_HIGHLIGHT_COLOR,
+    WARNING_UNDERLINE_COLOR,
     AboutDialog,
     CompletionTextEdit,
     MainWindow,
@@ -59,6 +60,21 @@ def _window_with_test_settings(qtbot, tmp_path, name: str = "settings") -> MainW
     window = MainWindow(settings=QSettings(str(tmp_path / f"{name}.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(window)
     return window
+
+
+def _completion_popup_words(editor: CompletionTextEdit) -> list[str]:
+    return [word for word, _kind in _completion_popup_rows(editor)]
+
+
+def _completion_popup_rows(editor: CompletionTextEdit) -> list[tuple[str, str]]:
+    completion_model = editor.completer.completionModel()
+    return [
+        (
+            completion_model.index(row, 0).data(),
+            completion_model.index(row, 1).data(),
+        )
+        for row in range(editor.completer.completionCount())
+    ]
 
 
 def test_typing_updates_results(qtbot, tmp_path) -> None:
@@ -109,12 +125,18 @@ def test_copy_current_result(qtbot, tmp_path) -> None:
     assert QApplication.clipboard().text() == "1002"
 
 
-def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path) -> None:
+def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path, monkeypatch) -> None:
     window = _window_with_test_settings(qtbot, tmp_path)
     window.show()
     qtbot.waitExposed(window)
     window.editor.setPlainText("8 times 9\n1200 meter in cm")
     qtbot.waitUntil(lambda: window.results.toPlainText().splitlines() == ["72", "120'000 cm"], timeout=1000)
+    tooltip_calls = []
+
+    def record_tooltip(position, text, widget=None, rect=None, msec_display_time=-1) -> None:
+        tooltip_calls.append((position, text, widget, rect, msec_display_time))
+
+    monkeypatch.setattr("pnumi.ui.QToolTip.showText", record_tooltip)
 
     rect = window.results._result_pill_rect(1)
     assert rect is not None
@@ -123,9 +145,19 @@ def test_clicking_hovered_result_copies_that_result(qtbot, tmp_path) -> None:
     qtbot.mouseMove(window.results.viewport(), point)
     assert window.results.result_at_position(point) == "120'000 cm"
 
-    qtbot.mouseClick(window.results.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    QApplication.clipboard().clear()
+    qtbot.mousePress(window.results.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    assert QApplication.clipboard().text() == ""
+    assert tooltip_calls == []
+
+    qtbot.mouseRelease(window.results.viewport(), Qt.MouseButton.LeftButton, pos=point)
 
     assert QApplication.clipboard().text() == "120000 cm"
+    assert tooltip_calls
+    _, text, widget, _, msec_display_time = tooltip_calls[-1]
+    assert text == "Copied"
+    assert widget == window.results.viewport()
+    assert msec_display_time == 1200
 
 
 def test_results_are_right_aligned_in_a_minimum_width_column(qtbot, tmp_path) -> None:
@@ -166,6 +198,122 @@ def test_autocomplete_contains_builtins_and_document_variables(qtbot, tmp_path) 
     assert "subtotal" in words
 
 
+def test_autocomplete_lists_document_variables_before_static_suggestions(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.set_dynamic_words(["subtotal", "sales_tax", "sum"])
+
+    editor.show_completions("s")
+
+    popup_words = _completion_popup_words(editor)
+    assert popup_words[:3] == ["sales_tax", "subtotal", "sum"]
+    assert popup_words[3:] == sorted(popup_words[3:], key=str.casefold)
+    assert popup_words.count("sum") == 1
+
+
+def test_autocomplete_shows_completion_kind_descriptions(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.set_dynamic_words(["sum"])
+
+    editor.show_completions("s")
+
+    popup_rows = dict(_completion_popup_rows(editor))
+    assert popup_rows["sum"] == "variable"
+    assert popup_rows["sqrt"] == "function"
+    assert editor.completer.completionModel().index(0, 1).data(Qt.ItemDataRole.FontRole).italic()
+
+    editor.show_completions("p")
+    popup_rows = dict(_completion_popup_rows(editor))
+    assert popup_rows["pi"] == "constant"
+
+    editor.show_completions("m")
+    popup_rows = dict(_completion_popup_rows(editor))
+    assert popup_rows["meter"] == "unit"
+
+    editor.show_completions("U")
+    popup_rows = dict(_completion_popup_rows(editor))
+    assert popup_rows["USD"] == "currency"
+
+
+def test_autocomplete_deduplicates_static_suggestions_case_insensitively(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+
+    words = editor.completion_words()
+    assert "XMR" in words
+    assert "xmr" not in words
+
+    editor.show_completions("xmr")
+
+    assert _completion_popup_rows(editor) == [("XMR", "currency")]
+
+
+def test_autocomplete_filters_live_after_manual_open(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.setFocus()
+    editor.set_dynamic_words(["sales_tax", "subtotal", "sum_total"])
+    editor.setPlainText("s")
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    editor.setTextCursor(cursor)
+    editor.open_completion_popup()
+
+    qtbot.keyClicks(editor, "u")
+
+    assert editor.toPlainText() == "su"
+    assert editor.completer.completionPrefix() == "su"
+    popup_words = _completion_popup_words(editor)
+    assert popup_words[:2] == ["subtotal", "sum_total"]
+    assert "sales_tax" not in popup_words
+
+
+def test_autocomplete_zero_match_session_recovers_after_backspace(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.setFocus()
+    editor.set_dynamic_words(["sales_tax"])
+    editor.setPlainText("sa")
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    editor.setTextCursor(cursor)
+    editor.open_completion_popup()
+
+    qtbot.keyClicks(editor, "zzz")
+
+    assert editor.completer.completionPrefix() == "sazzz"
+    assert editor.completer.completionCount() == 0
+    assert editor._completion_session_active
+
+    for _ in range(3):
+        qtbot.keyClick(editor, Qt.Key.Key_Backspace)
+
+    assert editor.completer.completionPrefix() == "sa"
+    assert editor.completer.completionCount() > 0
+    assert editor._completion_session_active
+
+
+def test_autocomplete_session_ends_on_whitespace(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.show()
+    editor.setFocus()
+    editor.setPlainText("sq")
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    editor.setTextCursor(cursor)
+    editor.open_completion_popup()
+
+    qtbot.keyClicks(editor, " ")
+
+    assert editor.toPlainText() == "sq "
+    assert not editor._completion_session_active
+    assert not editor.completer.popup().isVisible()
+
+
 def test_autocomplete_inserts_completion(qtbot) -> None:
     editor = CompletionTextEdit()
     qtbot.addWidget(editor)
@@ -173,8 +321,11 @@ def test_autocomplete_inserts_completion(qtbot) -> None:
     cursor = editor.textCursor()
     cursor.movePosition(QTextCursor.MoveOperation.End)
     editor.setTextCursor(cursor)
+    editor.open_completion_popup()
     editor.insert_completion("sqrt")
     assert editor.toPlainText() == "sqrt"
+    assert not editor._completion_session_active
+    assert not editor.completer.popup().isVisible()
 
 
 def test_autocomplete_can_be_opened_by_action(qtbot, tmp_path) -> None:
@@ -239,6 +390,7 @@ def test_autocomplete_does_not_open_while_typing(qtbot) -> None:
     qtbot.keyClicks(editor, "sq")
 
     assert editor.toPlainText() == "sq"
+    assert not editor._completion_session_active
     assert not editor.completer.popup().isVisible()
 
 
@@ -410,6 +562,66 @@ def test_settings_dialog_exposes_display_settings(qtbot) -> None:
     assert dialog.font_size() == 20
 
 
+def test_settings_dialog_changes_apply_before_accept(qtbot, tmp_path, monkeypatch) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.editor.setPlainText("1 / 3")
+    qtbot.waitUntil(lambda: window.results.toPlainText() == "0.3333333333", timeout=1000)
+
+    def edit_settings(dialog: SettingsDialog) -> QDialog.DialogCode:
+        dialog.alternating_row_background_checkbox.setChecked(False)
+        dialog.theme_mode_combo.setCurrentIndex(dialog.theme_mode_combo.findData(THEME_MODE_DARK))
+        dialog.result_decimal_places_spinbox.setValue(2)
+        dialog.font_size_spinbox.setValue(18)
+
+        assert not window.editor.alternating_row_background_enabled()
+        assert window.theme_mode == THEME_MODE_DARK
+        assert window.document_surface.theme == DARK_THEME
+        assert window.font_size == 18
+        assert window.editor.font().pointSize() == 18
+        qtbot.waitUntil(lambda: window.results.toPlainText() == "0.33", timeout=1000)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(SettingsDialog, "exec", edit_settings)
+
+    window.open_settings_dialog()
+
+    assert not window.alternating_row_background
+    assert window.theme_mode == THEME_MODE_DARK
+    assert window.result_decimal_places == 2
+    assert window.font_size == 18
+
+
+def test_settings_dialog_cancel_reverts_live_changes(qtbot, tmp_path, monkeypatch) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.editor.setPlainText("1 / 3")
+    qtbot.waitUntil(lambda: window.results.toPlainText() == "0.3333333333", timeout=1000)
+
+    def edit_settings(dialog: SettingsDialog) -> QDialog.DialogCode:
+        dialog.alternating_row_background_checkbox.setChecked(False)
+        dialog.theme_mode_combo.setCurrentIndex(dialog.theme_mode_combo.findData(THEME_MODE_DARK))
+        dialog.result_decimal_places_spinbox.setValue(2)
+        dialog.font_size_spinbox.setValue(18)
+        qtbot.waitUntil(lambda: window.results.toPlainText() == "0.33", timeout=1000)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(SettingsDialog, "exec", edit_settings)
+
+    window.open_settings_dialog()
+
+    qtbot.waitUntil(lambda: window.results.toPlainText() == "0.3333333333", timeout=1000)
+    assert window.alternating_row_background
+    assert window.editor.alternating_row_background_enabled()
+    assert window.theme_mode == THEME_MODE_LIGHT
+    assert window.document_surface.theme == LIGHT_THEME
+    assert window.result_decimal_places == 10
+    assert window.font_size == 14
+    assert window.editor.font().pointSize() == 14
+
+
 def test_font_size_setting_is_persisted_and_applied(qtbot, tmp_path) -> None:
     settings_path = tmp_path / "settings.ini"
     settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
@@ -499,8 +711,8 @@ def test_tier2_variable_warning_highlight(qtbot) -> None:
 
     # Line 1: "usd = 4" (variable definition shadows currency, should warning-highlight "usd")
     fmt_item_1 = next(item for item in first_line_formats if item.start <= 0 < item.start + item.length)
-    assert fmt_item_1.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-    assert fmt_item_1.format.underlineColor() == QColor("red")
+    assert fmt_item_1.format.underlineStyle() == QTextCharFormat.UnderlineStyle.WaveUnderline
+    assert fmt_item_1.format.underlineColor() == WARNING_UNDERLINE_COLOR
     assert fmt_item_1.format.foreground().color() == VARIABLE_HIGHLIGHT_COLOR
 
     # Line 2: "5 usd" (behaves as a unit literal, should highlight "usd" as keyword, no squiggle)
@@ -510,9 +722,24 @@ def test_tier2_variable_warning_highlight(qtbot) -> None:
 
     # Line 3: "10 + usd" (behaves as variable reference, should warning-highlight "usd")
     fmt_item_3 = next(item for item in third_line_formats if item.start <= 5 < item.start + item.length)
-    assert fmt_item_3.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
-    assert fmt_item_3.format.underlineColor() == QColor("red")
+    assert fmt_item_3.format.underlineStyle() == QTextCharFormat.UnderlineStyle.WaveUnderline
+    assert fmt_item_3.format.underlineColor() == WARNING_UNDERLINE_COLOR
     assert fmt_item_3.format.foreground().color() == VARIABLE_HIGHLIGHT_COLOR
+
+
+def test_tier2_variable_warning_highlight_uses_dark_theme_underline(qtbot) -> None:
+    editor = CompletionTextEdit()
+    qtbot.addWidget(editor)
+    editor.setPlainText("usd = 4")
+    editor.set_dynamic_words(["usd"])
+    editor.highlighter.set_theme(DARK_THEME)
+
+    first_line_formats = editor.document().firstBlock().layout().formats()
+    fmt_item = next(item for item in first_line_formats if item.start <= 0 < item.start + item.length)
+
+    assert fmt_item.format.underlineStyle() == QTextCharFormat.UnderlineStyle.WaveUnderline
+    assert fmt_item.format.underlineColor() == DARK_THEME.warning_underline
+    assert fmt_item.format.foreground().color() == DARK_THEME.variable
 
 
 def test_units_are_highlighted_when_adjacent_to_numbers(qtbot) -> None:

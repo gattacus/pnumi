@@ -11,6 +11,14 @@
 - Automated tests (`tests/test_user_guide.py`) that verify guide examples against the evaluation engine.
 - Prohibited variable assignments to reserved keyword names (e.g. `prev`, `sum`, `pi`), displaying detailed inline error messages in red and editor hover tooltips.
 - A warning system (red squiggly underlines and hover tooltips) for variables that shadow built-in units or currencies (e.g. `m = 5`).
+- Autocomplete suggestion kinds for variables, functions, constants, units, currencies, timezones, and keywords.
+- A "Copied" tooltip after clicking a result to copy it.
+
+### Changed
+
+- Autocomplete now prioritizes document variables, deduplicates static suggestions case-insensitively, and keeps filtering live after the popup is opened manually.
+- Settings dialog changes now preview immediately, with Cancel restoring the previous display settings.
+- Variable-shadowing warning underlines now use theme-aware wavy styling.
 
 ### Fixed
 

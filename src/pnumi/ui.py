@@ -17,7 +17,6 @@ from PySide6.QtCore import (
     QRunnable,
     QSettings,
     QSize,
-    QStringListModel,
     Qt,
     QThreadPool,
     QTimer,
@@ -33,6 +32,8 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPixmap,
+    QStandardItem,
+    QStandardItemModel,
     QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
@@ -60,6 +61,7 @@ from PySide6.QtWidgets import (
     QTabBar,
     QToolButton,
     QToolTip,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -78,6 +80,8 @@ DOCUMENT_BACKGROUND = QColor("#f7d74c")
 COMMENT_MARKDOWN_COLOR = QColor("#075f73")
 VARIABLE_HIGHLIGHT_COLOR = QColor("#4b2e83")
 KEYWORD_HIGHLIGHT_COLOR = QColor("#6b2f10")
+WARNING_UNDERLINE_COLOR = QColor("#a40021")
+DARK_WARNING_UNDERLINE_COLOR = QColor("#ff5c7a")
 ALTERNATING_ROW_BACKGROUND_KEY = "editor/alternatingRowBackground"
 DARK_MODE_KEY = "editor/darkMode"
 THEME_MODE_KEY = "editor/themeMode"
@@ -120,6 +124,7 @@ class EditorTheme:
     comment: QColor
     variable: QColor
     keyword: QColor
+    warning_underline: QColor
     selection_background: QColor
     selection_text: QColor
 
@@ -132,6 +137,7 @@ LIGHT_THEME = EditorTheme(
     comment=COMMENT_MARKDOWN_COLOR,
     variable=VARIABLE_HIGHLIGHT_COLOR,
     keyword=KEYWORD_HIGHLIGHT_COLOR,
+    warning_underline=WARNING_UNDERLINE_COLOR,
     selection_background=QColor("#3b82f6"),
     selection_text=QColor("#ffffff"),
 )
@@ -143,6 +149,7 @@ DARK_THEME = EditorTheme(
     comment=QColor("#80d7e8"),
     variable=QColor("#d3b5ff"),
     keyword=QColor("#ffb37a"),
+    warning_underline=DARK_WARNING_UNDERLINE_COLOR,
     selection_background=QColor("#4f7cff"),
     selection_text=QColor("#ffffff"),
 )
@@ -251,6 +258,7 @@ class ResultPane(StripedPlainTextEdit):
         self.highlighter = ResultHighlighter(self.document())
         self.highlighter.set_theme(self.theme)
         self._hovered_result_line: int | None = None
+        self._pressed_result_line: int | None = None
         self.setReadOnly(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -305,12 +313,29 @@ class ResultPane(StripedPlainTextEdit):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            result = self.result_at_position(event.position().toPoint())
+            line = self._result_line_at_position(event.position().toPoint())
+            result = self._result_text_for_line(line)
             if result and not result.startswith("Error:"):
-                QApplication.clipboard().setText(_clipboard_result_text(result))
+                self._pressed_result_line = line
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_result_line is not None:
+            pressed_line = self._pressed_result_line
+            self._pressed_result_line = None
+            line = self._result_line_at_position(event.position().toPoint())
+            result = self._result_text_for_line(line) if line == pressed_line else ""
+            if result and not result.startswith("Error:"):
+                QApplication.clipboard().setText(_clipboard_result_text(result))
+                self._show_copied_tooltip(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _show_copied_tooltip(self, position: QPoint) -> None:
+        QToolTip.showText(position, "Copied", self.viewport(), self.viewport().rect(), 1200)
 
     def _paint_hovered_result_pill(self) -> None:
         if self._hovered_result_line is None:
@@ -371,8 +396,8 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
         self.keyword_format.setForeground(KEYWORD_HIGHLIGHT_COLOR)
         self.warning_format = QTextCharFormat()
         self.warning_format.setForeground(VARIABLE_HIGHLIGHT_COLOR)
-        self.warning_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
-        self.warning_format.setUnderlineColor(QColor("red"))
+        self.warning_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.WaveUnderline)
+        self.warning_format.setUnderlineColor(WARNING_UNDERLINE_COLOR)
         self._variable_words: list[str] = []
 
     def set_theme(self, theme: EditorTheme) -> None:
@@ -380,6 +405,7 @@ class CommentMarkdownHighlighter(QSyntaxHighlighter):
         self.variable_format.setForeground(theme.variable)
         self.keyword_format.setForeground(theme.keyword)
         self.warning_format.setForeground(theme.variable)
+        self.warning_format.setUnderlineColor(theme.warning_underline)
         self.rehighlight()
 
     def set_variable_words(self, words: list[str]) -> None:
@@ -573,62 +599,83 @@ def _clipboard_result_text(text: str) -> str:
     return CLIPBOARD_THOUSANDS_SEPARATOR_RE.sub("", text)
 
 
-STATIC_COMPLETIONS = sorted(
+FUNCTION_COMPLETIONS = {
+    "abs",
+    "arccos",
+    "arcsin",
+    "arctan",
+    "average",
+    "avg",
+    "cbrt",
+    "ceil",
+    "cos",
+    "cosh",
+    "floor",
+    "fromunix",
+    "ln",
+    "log",
+    "mod",
+    "round",
+    "sin",
+    "sinh",
+    "sqrt",
+    "sum",
+    "tan",
+    "tanh",
+    "total",
+}
+CONSTANT_COMPLETIONS = {"now", "pi", "prev", "today"}
+
+
+def _static_completion_sort_key(word: str) -> tuple[str, str]:
+    return (word.casefold(), word)
+
+
+def _static_completion_rank(word: str) -> int:
+    return 0 if word in CURRENCY_CODES else 1
+
+
+def _deduplicated_static_completions(words: set[str]) -> list[str]:
+    selected: dict[str, str] = {}
+    for word in sorted(words, key=_static_completion_sort_key):
+        key = word.casefold()
+        current = selected.get(key)
+        if current is None or _static_completion_rank(word) < _static_completion_rank(current):
+            selected[key] = word
+    return sorted(selected.values(), key=str.casefold)
+
+
+STATIC_COMPLETIONS = _deduplicated_static_completions(
     {
-        "abs",
-        "arccos",
-        "arcsin",
-        "arctan",
+        *FUNCTION_COMPLETIONS,
+        *CONSTANT_COMPLETIONS,
         "as",
-        "average",
-        "avg",
         "bin",
         "binary",
-        "cbrt",
-        "ceil",
-        "cos",
-        "cosh",
         "day",
         "days",
         "divide",
         "divide by",
-        "floor",
-        "fromunix",
         "hex",
         "hexadecimal",
         "hour",
         "hours",
         "in",
         "into",
-        "ln",
-        "log",
         "minus",
-        "mod",
         "month",
         "months",
-        "now",
         "oct",
         "octal",
         "off",
         "on",
         "percent",
-        "pi",
         "plus",
-        "prev",
-        "round",
         "sci",
         "scientific",
-        "sin",
-        "sinh",
-        "sqrt",
-        "sum",
-        "tan",
-        "tanh",
         "time",
         "times",
         "to",
-        "today",
-        "total",
         "week",
         "weeks",
         "year",
@@ -637,8 +684,7 @@ STATIC_COMPLETIONS = sorted(
         *CURRENCY_ALIASES.keys(),
         *CURRENCY_CODES,
         *TIMEZONES.keys(),
-    },
-    key=str.casefold,
+    }
 )
 HIGHLIGHT_KEYWORDS = sorted(
     {word for word in STATIC_COMPLETIONS if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\s+[A-Za-z][A-Za-z0-9_]*)*", word)},
@@ -651,6 +697,20 @@ HIGHLIGHT_KEYWORD_RE = re.compile(
     + r")(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
+
+
+def _static_completion_kind(word: str) -> str:
+    if word in FUNCTION_COMPLETIONS:
+        return "function"
+    if word in CONSTANT_COMPLETIONS:
+        return "constant"
+    if word in UNIT_ALIASES:
+        return "unit"
+    if word in CURRENCY_CODES or word in CURRENCY_ALIASES:
+        return "currency"
+    if word in TIMEZONES:
+        return "timezone"
+    return "keyword"
 
 TIER2_NAMES = {
     *(word.lower() for word in UNIT_ALIASES.keys()),
@@ -667,12 +727,21 @@ class CompletionTextEdit(StripedPlainTextEdit):
         self.viewport().setMouseTracking(True)
         self._static_words = STATIC_COMPLETIONS
         self._dynamic_words: list[str] = []
+        self._completion_session_active = False
         self.highlighter = CommentMarkdownHighlighter(self.document())
-        self._model = QStringListModel(self)
+        self._model = QStandardItemModel(self)
         self.completer = QCompleter(self._model, self)
         self.completer.setWidget(self)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setCompletionColumn(0)
         self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        popup = QTreeView(self)
+        popup.setRootIsDecorated(False)
+        popup.setHeaderHidden(True)
+        popup.setItemsExpandable(False)
+        popup.setUniformRowHeights(True)
+        popup.setAllColumnsShowFocus(True)
+        self.completer.setPopup(popup)
         self.completer.activated.connect(self.insert_completion)
         self.refresh_completions()
 
@@ -684,10 +753,31 @@ class CompletionTextEdit(StripedPlainTextEdit):
             self.highlighter.set_variable_words(cleaned)
 
     def completion_words(self) -> list[str]:
-        return self._model.stringList()
+        return [self._model.item(row, 0).text() for row in range(self._model.rowCount())]
 
     def refresh_completions(self) -> None:
-        self._model.setStringList(sorted({*self._static_words, *self._dynamic_words}, key=str.casefold))
+        dynamic_keys = {word.casefold() for word in self._dynamic_words}
+        static_words = sorted(
+            {word for word in self._static_words if word.casefold() not in dynamic_keys},
+            key=str.casefold,
+        )
+        self._model.clear()
+        self._model.setHorizontalHeaderLabels(["Completion", "Kind"])
+        for word in self._dynamic_words:
+            self._append_completion_row(word, "variable")
+        for word in static_words:
+            self._append_completion_row(word, _static_completion_kind(word))
+
+    def _append_completion_row(self, word: str, kind: str) -> None:
+        word_item = QStandardItem(word)
+        kind_item = QStandardItem(kind)
+        kind_font = kind_item.font()
+        kind_font.setItalic(True)
+        kind_item.setFont(kind_font)
+        word_item.setEditable(False)
+        kind_item.setEditable(False)
+        kind_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._model.appendRow([word_item, kind_item])
 
     def insert_completion(self, completion: str) -> None:
         cursor = self.textCursor()
@@ -696,6 +786,7 @@ class CompletionTextEdit(StripedPlainTextEdit):
             cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, len(prefix))
         cursor.insertText(completion)
         self.setTextCursor(cursor)
+        self._end_completion_session()
 
     def text_under_cursor(self) -> str:
         cursor = self.textCursor()
@@ -704,10 +795,13 @@ class CompletionTextEdit(StripedPlainTextEdit):
         return selected if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", selected) else ""
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._completion_session_active and event.key() == Qt.Key.Key_Escape:
+            self._end_completion_session()
+            event.accept()
+            return
         if self.completer.popup().isVisible() and event.key() in {
             Qt.Key.Key_Enter,
             Qt.Key.Key_Return,
-            Qt.Key.Key_Escape,
             Qt.Key.Key_Tab,
             Qt.Key.Key_Backtab,
         }:
@@ -719,6 +813,11 @@ class CompletionTextEdit(StripedPlainTextEdit):
         prefix = self.text_under_cursor()
         if manual_trigger:
             self.show_completions(prefix)
+        elif self._completion_session_active:
+            if prefix:
+                self._update_completion_popup(prefix)
+            else:
+                self._end_completion_session()
         else:
             self.completer.popup().hide()
 
@@ -726,6 +825,10 @@ class CompletionTextEdit(StripedPlainTextEdit):
         self.show_completions(self.text_under_cursor())
 
     def show_completions(self, prefix: str) -> None:
+        self._completion_session_active = True
+        self._update_completion_popup(prefix)
+
+    def _update_completion_popup(self, prefix: str) -> None:
         self.completer.setCompletionPrefix(prefix)
         if self.completer.completionCount() == 0:
             self.completer.popup().hide()
@@ -733,8 +836,23 @@ class CompletionTextEdit(StripedPlainTextEdit):
         popup = self.completer.popup()
         popup.setCurrentIndex(self.completer.completionModel().index(0, 0))
         rect = self.cursorRect()
-        rect.setWidth(popup.sizeHintForColumn(0) + popup.verticalScrollBar().sizeHint().width() + 24)
+        popup.resizeColumnToContents(0)
+        popup.resizeColumnToContents(1)
+        rect.setWidth(
+            popup.sizeHintForColumn(0)
+            + popup.sizeHintForColumn(1)
+            + popup.verticalScrollBar().sizeHint().width()
+            + 40
+        )
         self.completer.complete(rect)
+
+    def _end_completion_session(self) -> None:
+        self._completion_session_active = False
+        self.completer.popup().hide()
+
+    def focusOutEvent(self, event) -> None:
+        self._end_completion_session()
+        super().focusOutEvent(event)
 
     def set_line_errors(self, errors: dict[int, str]) -> None:
         self._line_errors = errors
@@ -1469,6 +1587,12 @@ class MainWindow(QMainWindow):
         self.apply_settings()
 
     def open_settings_dialog(self) -> None:
+        previous_settings = (
+            self.alternating_row_background,
+            self.theme_mode,
+            self.result_decimal_places,
+            self.font_size,
+        )
         dialog = SettingsDialog(
             self.alternating_row_background,
             self.theme_mode,
@@ -1476,11 +1600,21 @@ class MainWindow(QMainWindow):
             self.font_size,
             self,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.set_alternating_row_background(dialog.alternating_row_background_enabled())
-            self.set_theme_mode(dialog.theme_mode())
-            self.set_result_decimal_places(dialog.result_decimal_places())
-            self.set_font_size(dialog.font_size())
+        dialog.alternating_row_background_checkbox.toggled.connect(self.set_alternating_row_background)
+        dialog.theme_mode_combo.currentIndexChanged.connect(lambda _index: self.set_theme_mode(dialog.theme_mode()))
+        dialog.result_decimal_places_spinbox.valueChanged.connect(self.set_result_decimal_places)
+        dialog.font_size_spinbox.valueChanged.connect(self.set_font_size)
+        if dialog.exec() == QDialog.DialogCode.Rejected:
+            (
+                alternating_row_background,
+                theme_mode,
+                result_decimal_places,
+                font_size,
+            ) = previous_settings
+            self.set_alternating_row_background(alternating_row_background)
+            self.set_theme_mode(theme_mode)
+            self.set_result_decimal_places(result_decimal_places)
+            self.set_font_size(font_size)
 
     def open_about_dialog(self) -> None:
         AboutDialog(self).exec()

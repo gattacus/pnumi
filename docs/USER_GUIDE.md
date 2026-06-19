@@ -339,7 +339,7 @@ Pnumi offers extensive support for fiat and cryptocurrencies, complete with live
 
 ### Rate Provider and Yahoo Finance
 
-By default, currency conversions utilize the Yahoo Finance rate provider (`yfinance` package). This pulls near-live exchange rates automatically when you perform conversions.
+In the standalone Pnumi app, currency conversions utilize the Yahoo Finance rate provider (`yfinance` package). This pulls near-live exchange rates automatically when you perform conversions. Applications that embed Pnumi can pass their own rate provider, including a disabled provider for offline/private modes.
 
 ### ISO Currency Codes and Names
 
@@ -487,6 +487,10 @@ Pnumi supports standard desktop keyboard shortcuts for editor control and layout
 | **Delete All Text** | `Alt + Cmd + Backspace` | `Alt + Ctrl + Backspace` |
 | **Surround Selected Text with Parentheses** | `Cmd + Shift + 0` | `Ctrl + Shift + 9` or `Ctrl + Shift + 0` |
 | **Show Autocomplete Suggestions** | `Cmd + Space` | `Ctrl + Space` |
+| **Duplicate Line or Selection** | `Cmd + D` or `Ctrl + D` | `Ctrl + D` |
+| **Delete Line or Selection** | `Cmd + Backspace` or `Ctrl + Backspace` | `Ctrl + Backspace` |
+| **Move Line or Selection** | `Option + Shift + Up/Down` | `Alt + Shift + Up/Down` |
+| **Open URL Under Cursor** | `Cmd + Click` | `Ctrl + Click` |
 | **Open Settings** | `Cmd + ,` | Standard Preferences shortcut |
 
 ### Additional UI Features

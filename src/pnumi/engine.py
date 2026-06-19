@@ -34,6 +34,7 @@ TIMEZONES = {
 
 CONVERSION_RE = re.compile(r"\s+(?:in|into|as|to)\s+", re.IGNORECASE)
 ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
+IMAGE_TOKEN_RE = re.compile(r"\[\[image:[A-Za-z0-9_.-]+\]\]")
 DECIMAL_NUMBER_PATTERN = r"\d+(?:[ ,']\d{3})*(?:\.\d+)?|\d*\.\d+"
 COMPOUND_UNIT_SEGMENT_PATTERN = r"[A-Za-z°][A-Za-z0-9°]*"
 CURRENCY_SIGN_PATTERN = "[" + re.escape("".join(sorted(CURRENCY_SIGNS))) + "]"
@@ -83,6 +84,8 @@ def evaluate_line(text: str, context: DocumentContext | None = None) -> LineResu
     if not stripped:
         context.reset_section()
         return result
+    if IMAGE_TOKEN_RE.fullmatch(stripped):
+        return result
     if stripped.startswith("#") or stripped.startswith("//"):
         return result
     expression = _strip_formatting(text)
@@ -116,6 +119,7 @@ def evaluate_line(text: str, context: DocumentContext | None = None) -> LineResu
 
 
 def _strip_formatting(text: str) -> str:
+    text = IMAGE_TOKEN_RE.sub("", text)
     text = re.sub(r'"[^"]*"', "", text)
     if "//" in text:
         text = text.split("//", 1)[0]

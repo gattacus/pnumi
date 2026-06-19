@@ -17,6 +17,7 @@ For a detailed guide on how to use Pnumi, including calculations, units, currenc
 - Dates and times: evaluate date math, Unix timestamps, and timezone-aware time expressions.
 - Functions and formatting: use math helpers such as `sqrt`, `round`, trigonometry, and base conversions like hex or binary.
 - Autocomplete and highlighting: get completions for functions, units, currencies, timezones, and document variables.
+- Editor ergonomics: duplicate, delete, and move lines with keyboard shortcuts, and open detected URLs with modifier-click.
 - Import, export, copy, and print: move `.numi` or text documents in and out of the app from the menu.
 - Multi-sheet tabs: manage multiple calculation sheets using a top tab bar (reorderable, dynamically hidden when only a single tab is open) with session persistence.
 - Light and dark themes: switch editor themes and alternating row backgrounds in settings.
@@ -38,6 +39,31 @@ Dark theme:
 python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pnumi
+```
+
+## Embedding and Local Packages
+
+Pnumi can be consumed by another Python application through its package API:
+
+```python
+from pnumi.engine import evaluate_document
+from pnumi.rates import DisabledRateProvider
+
+document = evaluate_document("10 USD in EUR", {"rate_provider": DisabledRateProvider()})
+```
+
+Online rate fetching is provided by the optional `rates` extra:
+
+```sh
+pip install "pnumi[rates]"
+```
+
+For local development with a consumer app, build a normal
+distribution and install from `dist/` instead of using editable imports:
+
+```sh
+./scripts/build_local_dist.sh
+python -m pip install --find-links dist "pnumi[rates]"
 ```
 
 ## Test

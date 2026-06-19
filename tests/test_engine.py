@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pnumi.engine import evaluate_document, evaluate_line
 from pnumi.models import DocumentContext
-from pnumi.rates import StaticRateProvider
+from pnumi.rates import DisabledRateProvider, StaticRateProvider
 
 
 def context() -> DocumentContext:
@@ -392,6 +392,20 @@ def test_document_evaluation() -> None:
     assert result.displays == ["10 USD", "20 USD", "15 USD"]
 
 
+def test_disabled_rate_provider_keeps_embedded_callers_offline() -> None:
+    result = evaluate_document("$10 + 5 EUR", {"rate_provider": DisabledRateProvider()})
+    assert result.displays == [""]
+    assert "disabled" in result.line_results[0].diagnostics[0]
+
+
+def test_brainpot_image_tokens_are_ignored_by_evaluator() -> None:
+    result = evaluate_document(
+        "subtotal = 20\n[[image:abc-123]]\nsubtotal * 2",
+        {"rate_provider": context().rate_provider},
+    )
+    assert result.displays == ["20", "", "40"]
+
+
 def test_parentheses_calculations() -> None:
     provider = StaticRateProvider(
         {
@@ -447,6 +461,4 @@ def test_reserved_keyword_assignments_fail() -> None:
     assert res.ok
     assert res.display == "10"
     assert ctx.variables["my_var"].magnitude == Decimal("10")
-
-
 

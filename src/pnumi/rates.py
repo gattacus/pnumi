@@ -20,6 +20,15 @@ class RateProvider:
         raise NotImplementedError
 
 
+class DisabledRateProvider(RateProvider):
+    def get_rate(self, base: str, quote: str, at: date | None = None) -> Decimal:
+        base = base.upper()
+        quote = quote.upper()
+        if base == quote:
+            return Decimal("1")
+        raise LookupError("Online rate fetching is disabled")
+
+
 @dataclass
 class StaticRateProvider(RateProvider):
     rates: dict[tuple[str, str], Decimal]

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Embedding support for host applications, including an explicit disabled rate
+  provider for callers that must not make online requests.
+- A `rates` optional dependency extra for Yahoo Finance/yfinance-backed rates.
+- Local distribution build script (`scripts/build_local_dist.sh`) for consumers
+  that test against a wheel/sdist rather than editable imports.
+- Editor shortcuts for duplicating, deleting, and moving lines, plus
+  modifier-click URL opening in the standalone app.
+
+### Changed
+
+- Inline image tokens such as `[[image:...]]` are ignored by the
+  evaluator so embedded documents can include host-managed inline images.
+
 ## 0.3.0 - 2026-06-18
 
 ### Added

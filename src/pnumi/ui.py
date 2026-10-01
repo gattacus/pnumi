@@ -20,11 +20,13 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QDesktopServices,
     QFont,
     QIcon,
     QKeyEvent,
@@ -37,6 +39,7 @@ from PySide6.QtGui import (
     QSyntaxHighlighter,
     QTextCharFormat,
     QTextCursor,
+    QTextDocumentFragment,
     QTextOption,
 )
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
@@ -105,6 +108,8 @@ SETTINGS_APPLICATION = "Pnumi"
 DEFAULT_WINDOW_SIZE = QSize(920, 640)
 DEFAULT_DOCUMENT_TEXT = "Cost: $20 + 56 EUR\nDiscounted: prev - 5% off\n\n1 meter 20 cm in cm\nround(1 month in days)"
 SHOW_COMPLETIONS_SHORTCUTS = [QKeySequence("Meta+Space" if sys.platform == "darwin" else "Ctrl+Space")]
+LINK_MODIFIER = Qt.KeyboardModifier.MetaModifier if sys.platform == "darwin" else Qt.KeyboardModifier.ControlModifier
+LINK_RE = re.compile(r"(?P<url>(?:https?|ftp)://[^\s<>\[\]()\"']+|www\.[^\s<>\[\]()\"']+)")
 CLIPBOARD_THOUSANDS_SEPARATOR_RE = re.compile(r"(?<=\d)[ ,'\u2018\u2019](?=\d{3}(?:\D|$))")
 RESULT_COLUMN_LEFT_PADDING = 8
 RESULT_COLUMN_RIGHT_PADDING = 22
@@ -799,7 +804,176 @@ class CompletionTextEdit(StripedPlainTextEdit):
         selected = cursor.selectedText()
         return selected if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", selected) else ""
 
+    def _link_at_position(self, position: QPoint) -> str | None:
+        cursor = self.cursorForPosition(position)
+        block = cursor.block()
+        if not block.isValid():
+            return None
+        position_in_block = cursor.positionInBlock()
+        text = block.text()
+        for match in LINK_RE.finditer(text):
+            # Regex spans count Unicode code points; Qt positions count UTF-16
+            # code units, including two units for characters such as emoji.
+            start = len(text[:match.start()].encode("utf-16-le")) // 2
+            end = start + len(match.group("url").encode("utf-16-le")) // 2
+            if start <= position_in_block < end:
+                url = match.group("url")
+                return url if "://" in url else f"http://{url}"
+        return None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & LINK_MODIFIER):
+            link = self._link_at_position(event.position().toPoint())
+            if link:
+                QDesktopServices.openUrl(QUrl(link))
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def _delete_line_shortcut_pressed(self, event: QKeyEvent) -> bool:
+        return event.key() == Qt.Key.Key_Backspace and event.modifiers() in {
+            Qt.KeyboardModifier.MetaModifier, Qt.KeyboardModifier.ControlModifier
+        }
+
+    def _duplicate_line_shortcut_pressed(self, event: QKeyEvent) -> bool:
+        return event.key() == Qt.Key.Key_D and event.modifiers() in {
+            Qt.KeyboardModifier.MetaModifier, Qt.KeyboardModifier.ControlModifier
+        }
+
+    def _move_line_shortcut_direction(self, event: QKeyEvent) -> int | None:
+        required = Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier
+        if event.modifiers() != required:
+            return None
+        if event.key() == Qt.Key.Key_Up:
+            return -1
+        if event.key() == Qt.Key.Key_Down:
+            return 1
+        return None
+
+    def _line_range_for_cursor(self, cursor: QTextCursor) -> tuple[int, int, int]:
+        document = self.document()
+        if cursor.hasSelection():
+            selection_start = cursor.selectionStart()
+            selection_end = cursor.selectionEnd()
+            start_block = document.findBlock(selection_start)
+            end_block = document.findBlock(max(selection_end - 1, selection_start))
+        else:
+            start_block = cursor.block()
+            end_block = cursor.block()
+        range_start = start_block.position()
+        logical_end = end_block.position() + end_block.length() - 1
+        trailing_end = logical_end
+        if end_block.next().isValid():
+            trailing_end += 1
+        return range_start, logical_end, trailing_end
+
+    def _duplicate_selection_or_line(self) -> None:
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        if cursor.hasSelection():
+            start = cursor.selectionStart()
+            end = cursor.selectionEnd()
+            selection_cursor = self.textCursor()
+            selection_cursor.setPosition(start)
+            selection_cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            fragment = QTextDocumentFragment(selection_cursor)
+            insert_cursor = self.textCursor()
+            insert_cursor.setPosition(end)
+            insert_cursor.insertFragment(fragment)
+            cursor.setPosition(end)
+            cursor.setPosition(end + (end - start), QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+            cursor.endEditBlock()
+            return
+        block = cursor.block()
+        column = cursor.positionInBlock()
+        block_end = block.position() + block.length() - 1
+        line_cursor = self.textCursor()
+        line_cursor.setPosition(block.position())
+        line_cursor.setPosition(block_end, QTextCursor.MoveMode.KeepAnchor)
+        fragment = QTextDocumentFragment(line_cursor)
+        cursor.setPosition(block_end)
+        cursor.insertText("\n")
+        duplicate_start = cursor.position()
+        cursor.insertFragment(fragment)
+        cursor.setPosition(duplicate_start + column)
+        self.setTextCursor(cursor)
+        cursor.endEditBlock()
+
+    def _delete_current_line_or_selection(self) -> None:
+        cursor = self.textCursor()
+        range_start, logical_end, trailing_end = self._line_range_for_cursor(cursor)
+        delete_start = range_start
+        delete_end = trailing_end
+        if trailing_end == logical_end and delete_start > 0:
+            delete_start -= 1
+        cursor.beginEditBlock()
+        cursor.setPosition(delete_start)
+        cursor.setPosition(delete_end, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.endEditBlock()
+
+    def _move_current_line_or_selection(self, direction: int) -> None:
+        cursor = self.textCursor()
+        range_start, logical_end, _trailing_end = self._line_range_for_cursor(cursor)
+        document = self.document()
+        start_block = document.findBlock(range_start)
+        end_block = document.findBlock(logical_end)
+        adjacent = start_block.previous() if direction < 0 else end_block.next()
+        if not adjacent.isValid():
+            return
+
+        # Qt cursor positions use UTF-16 offsets. Keep all ranges in document
+        # coordinates, and replace only the affected blocks in one undo step.
+        group_cursor = self.textCursor()
+        group_cursor.setPosition(range_start)
+        group_cursor.setPosition(logical_end, QTextCursor.MoveMode.KeepAnchor)
+        group_fragment = QTextDocumentFragment(group_cursor)
+        adjacent_cursor = self.textCursor()
+        adjacent_cursor.setPosition(adjacent.position())
+        adjacent_cursor.setPosition(adjacent.position() + adjacent.length() - 1, QTextCursor.MoveMode.KeepAnchor)
+        adjacent_fragment = QTextDocumentFragment(adjacent_cursor)
+        old_position, old_anchor = cursor.position(), cursor.anchor()
+        delta = -adjacent.length() if direction < 0 else adjacent.length()
+
+        cursor.beginEditBlock()
+        cursor.setPosition(adjacent.position() if direction < 0 else range_start)
+        cursor.setPosition(
+            logical_end if direction < 0 else adjacent.position() + adjacent.length() - 1,
+            QTextCursor.MoveMode.KeepAnchor,
+        )
+        cursor.insertFragment(group_fragment if direction < 0 else adjacent_fragment)
+        cursor.insertText("\n")
+        cursor.insertFragment(adjacent_fragment if direction < 0 else group_fragment)
+        cursor.endEditBlock()
+        # A selection ending at the next block's start includes a separator.
+        # When moved to EOF, that separator is no longer selectable.
+        last_position = document.characterCount() - 1
+        cursor.setPosition(min(old_anchor + delta, last_position))
+        cursor.setPosition(min(old_position + delta, last_position), QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
+
+    def _handle_editor_shortcut_keypress(self, event: QKeyEvent) -> bool:
+        if self.isReadOnly():
+            return False
+        if self._duplicate_line_shortcut_pressed(event):
+            self._duplicate_selection_or_line()
+            event.accept()
+            return True
+        if self._delete_line_shortcut_pressed(event):
+            self._delete_current_line_or_selection()
+            event.accept()
+            return True
+        direction = self._move_line_shortcut_direction(event)
+        if direction is not None:
+            self._move_current_line_or_selection(direction)
+            event.accept()
+            return True
+        return False
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._handle_editor_shortcut_keypress(event):
+            return
         if self._completion_session_active and event.key() == Qt.Key.Key_Escape:
             self._end_completion_session()
             event.accept()

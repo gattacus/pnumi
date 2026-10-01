@@ -821,16 +821,18 @@ class CompletionTextEdit(StripedPlainTextEdit):
         super().mousePressEvent(event)
 
     def _delete_line_shortcut_pressed(self, event: QKeyEvent) -> bool:
-        primary = Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier
-        return event.key() == Qt.Key.Key_Backspace and bool(event.modifiers() & primary)
+        return event.key() == Qt.Key.Key_Backspace and event.modifiers() in {
+            Qt.KeyboardModifier.MetaModifier, Qt.KeyboardModifier.ControlModifier
+        }
 
     def _duplicate_line_shortcut_pressed(self, event: QKeyEvent) -> bool:
-        primary = Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ControlModifier
-        return event.key() == Qt.Key.Key_D and bool(event.modifiers() & primary)
+        return event.key() == Qt.Key.Key_D and event.modifiers() in {
+            Qt.KeyboardModifier.MetaModifier, Qt.KeyboardModifier.ControlModifier
+        }
 
     def _move_line_shortcut_direction(self, event: QKeyEvent) -> int | None:
         required = Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier
-        if (event.modifiers() & required) != required:
+        if event.modifiers() != required:
             return None
         if event.key() == Qt.Key.Key_Up:
             return -1
@@ -849,10 +851,9 @@ class CompletionTextEdit(StripedPlainTextEdit):
             start_block = cursor.block()
             end_block = cursor.block()
         range_start = start_block.position()
-        logical_end = end_block.position() + len(end_block.text())
+        logical_end = end_block.position() + end_block.length() - 1
         trailing_end = logical_end
-        text = self.toPlainText()
-        if trailing_end < len(text) and text[trailing_end] == "\n":
+        if end_block.next().isValid():
             trailing_end += 1
         return range_start, logical_end, trailing_end
 
@@ -875,23 +876,17 @@ class CompletionTextEdit(StripedPlainTextEdit):
             cursor.endEditBlock()
             return
         block = cursor.block()
-        block_start = block.position()
-        block_text = block.text()
-        block_end = block_start + len(block_text)
-        text = self.toPlainText()
+        column = cursor.positionInBlock()
+        block_end = block.position() + block.length() - 1
         line_cursor = self.textCursor()
-        line_cursor.setPosition(block_start)
-        line_cursor.setPosition(
-            block_end + (1 if block_end < len(text) and text[block_end] == "\n" else 0),
-            QTextCursor.MoveMode.KeepAnchor,
-        )
+        line_cursor.setPosition(block.position())
+        line_cursor.setPosition(block_end, QTextCursor.MoveMode.KeepAnchor)
         fragment = QTextDocumentFragment(line_cursor)
-        insert_cursor = self.textCursor()
-        insert_cursor.setPosition(block_end)
-        if block_end >= len(text):
-            insert_cursor.insertText("\n")
-        insert_cursor.insertFragment(fragment)
-        cursor.setPosition(min(insert_cursor.position(), len(self.toPlainText())))
+        cursor.setPosition(block_end)
+        cursor.insertText("\n")
+        duplicate_start = cursor.position()
+        cursor.insertFragment(fragment)
+        cursor.setPosition(duplicate_start + column)
         self.setTextCursor(cursor)
         cursor.endEditBlock()
 
@@ -910,29 +905,43 @@ class CompletionTextEdit(StripedPlainTextEdit):
 
     def _move_current_line_or_selection(self, direction: int) -> None:
         cursor = self.textCursor()
-        range_start, _logical_end, trailing_end = self._line_range_for_cursor(cursor)
+        range_start, logical_end, _trailing_end = self._line_range_for_cursor(cursor)
         document = self.document()
         start_block = document.findBlock(range_start)
-        end_block = document.findBlock(max(trailing_end - 1, range_start))
-        if direction < 0 and not start_block.previous().isValid():
+        end_block = document.findBlock(logical_end)
+        adjacent = start_block.previous() if direction < 0 else end_block.next()
+        if not adjacent.isValid():
             return
-        if direction > 0 and not end_block.next().isValid():
-            return
-        text = self.toPlainText()
-        lines = text.splitlines(keepends=True)
-        block_start = start_block.blockNumber()
-        block_end = end_block.blockNumber()
-        if direction < 0:
-            lines[block_start - 1 : block_end + 1] = lines[block_start : block_end + 1] + [lines[block_start - 1]]
-            target_line = block_start - 1
-        else:
-            lines[block_start : block_end + 2] = [lines[block_end + 1]] + lines[block_start : block_end + 1]
-            target_line = block_start + 1
-        self.setPlainText("".join(lines))
-        new_block = self.document().findBlockByNumber(target_line)
-        new_cursor = self.textCursor()
-        new_cursor.setPosition(new_block.position())
-        self.setTextCursor(new_cursor)
+
+        # Qt cursor positions use UTF-16 offsets. Keep all ranges in document
+        # coordinates, and replace only the affected blocks in one undo step.
+        group_cursor = self.textCursor()
+        group_cursor.setPosition(range_start)
+        group_cursor.setPosition(logical_end, QTextCursor.MoveMode.KeepAnchor)
+        group_fragment = QTextDocumentFragment(group_cursor)
+        adjacent_cursor = self.textCursor()
+        adjacent_cursor.setPosition(adjacent.position())
+        adjacent_cursor.setPosition(adjacent.position() + adjacent.length() - 1, QTextCursor.MoveMode.KeepAnchor)
+        adjacent_fragment = QTextDocumentFragment(adjacent_cursor)
+        old_position, old_anchor = cursor.position(), cursor.anchor()
+        delta = -adjacent.length() if direction < 0 else adjacent.length()
+
+        cursor.beginEditBlock()
+        cursor.setPosition(adjacent.position() if direction < 0 else range_start)
+        cursor.setPosition(
+            logical_end if direction < 0 else adjacent.position() + adjacent.length() - 1,
+            QTextCursor.MoveMode.KeepAnchor,
+        )
+        cursor.insertFragment(group_fragment if direction < 0 else adjacent_fragment)
+        cursor.insertText("\n")
+        cursor.insertFragment(adjacent_fragment if direction < 0 else group_fragment)
+        cursor.endEditBlock()
+        # A selection ending at the next block's start includes a separator.
+        # When moved to EOF, that separator is no longer selectable.
+        last_position = document.characterCount() - 1
+        cursor.setPosition(min(old_anchor + delta, last_position))
+        cursor.setPosition(min(old_position + delta, last_position), QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
 
     def _handle_editor_shortcut_keypress(self, event: QKeyEvent) -> bool:
         if self._duplicate_line_shortcut_pressed(event):

@@ -450,6 +450,25 @@ def test_legacy_dark_mode_setting_is_migrated(qtbot, tmp_path) -> None:
     assert window.document_surface.theme == DARK_THEME
 
 
+def test_theme_can_change_after_legacy_dark_mode_migration(qtbot, tmp_path) -> None:
+    path = str(tmp_path / "legacy-theme.ini")
+    settings = QSettings(path, QSettings.Format.IniFormat)
+    settings.setValue(DARK_MODE_KEY, True)
+    window = MainWindow(settings=settings)
+    qtbot.addWidget(window)
+
+    window.set_theme_mode(THEME_MODE_LIGHT)
+    assert window.theme_mode == THEME_MODE_LIGHT
+    assert not window.dark_mode
+    assert window.document_surface.theme == LIGHT_THEME
+    settings.sync()
+
+    reloaded = MainWindow(settings=QSettings(path, QSettings.Format.IniFormat))
+    qtbot.addWidget(reloaded)
+    assert reloaded.theme_mode == THEME_MODE_LIGHT
+    assert not reloaded.dark_mode
+
+
 def test_system_theme_mode_tracks_system_color_scheme(qtbot, tmp_path, monkeypatch) -> None:
     system_dark_mode = True
     monkeypatch.setattr(MainWindow, "_system_dark_mode", lambda _self: system_dark_mode)

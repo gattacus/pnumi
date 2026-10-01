@@ -73,6 +73,21 @@ from .formatting import DEFAULT_DECIMAL_PLACES
 from .models import LineResult
 from .numi_import import normalize_numi_import
 from .rates import default_rate_provider
+from .settings import (
+    ALTERNATING_ROW_BACKGROUND_KEY,
+    DARK_MODE_KEY,
+    FONT_SIZE_KEY,
+    RESULT_DECIMAL_PLACES_KEY,
+    TABS_COUNT_KEY,
+    TABS_CURRENT_KEY,
+    THEME_MODE_DARK,
+    THEME_MODE_KEY,
+    THEME_MODE_LIGHT,
+    THEME_MODE_SYSTEM,
+    THEME_MODES,
+    WINDOW_SIZE_KEY,
+    AppSettings,
+)
 from .units import ALIASES as UNIT_ALIASES
 
 ALTERNATE_ROW_BACKGROUND = QColor("#efd046")
@@ -82,18 +97,8 @@ VARIABLE_HIGHLIGHT_COLOR = QColor("#4b2e83")
 KEYWORD_HIGHLIGHT_COLOR = QColor("#6b2f10")
 WARNING_UNDERLINE_COLOR = QColor("#a40021")
 DARK_WARNING_UNDERLINE_COLOR = QColor("#ff5c7a")
-ALTERNATING_ROW_BACKGROUND_KEY = "editor/alternatingRowBackground"
-DARK_MODE_KEY = "editor/darkMode"
-THEME_MODE_KEY = "editor/themeMode"
-THEME_MODE_SYSTEM = "system"
-THEME_MODE_LIGHT = "light"
-THEME_MODE_DARK = "dark"
-THEME_MODES = {THEME_MODE_SYSTEM, THEME_MODE_LIGHT, THEME_MODE_DARK}
 LAST_CONTENT_KEY = "editor/lastContent"
-RESULT_DECIMAL_PLACES_KEY = "results/decimalPlaces"
-FONT_SIZE_KEY = "editor/fontSize"
 DEFAULT_FONT_SIZE = 14
-WINDOW_SIZE_KEY = "window/size"
 SETTINGS_ORGANIZATION = "gattacus.uk"
 SETTINGS_ORGANIZATION_DOMAIN = "uk.gattacus"
 SETTINGS_APPLICATION = "Pnumi"
@@ -892,6 +897,7 @@ class Sheet(QWidget):
         content: str = "",
         path: Path | None = None,
         title: str = "",
+        font_size: int = DEFAULT_FONT_SIZE,
     ) -> None:
         super().__init__(parent)
         self.settings = settings
@@ -908,8 +914,7 @@ class Sheet(QWidget):
 
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
-        font_size = _settings_int(settings, FONT_SIZE_KEY, DEFAULT_FONT_SIZE, minimum=8, maximum=72)
-        font.setPointSize(font_size)
+        font.setPointSize(max(8, min(font_size, 72)))
         self.editor.setFont(font)
         self.results.setFont(font)
 
@@ -976,13 +981,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Pnumi")
         self.settings = settings or _app_settings()
-        self.alternating_row_background = _settings_bool(self.settings, ALTERNATING_ROW_BACKGROUND_KEY, True)
-        self.theme_mode = _settings_theme_mode(self.settings)
+        self.app_settings = AppSettings.load(self.settings)
+        self.alternating_row_background = self.app_settings.alternating_row_background
+        self.theme_mode = self.app_settings.theme_mode_effective
         self.dark_mode = False
-        self.result_decimal_places = _settings_int(
-            self.settings, RESULT_DECIMAL_PLACES_KEY, DEFAULT_DECIMAL_PLACES, minimum=0, maximum=20
-        )
-        self.font_size = _settings_int(self.settings, FONT_SIZE_KEY, DEFAULT_FONT_SIZE, minimum=8, maximum=72)
+        self.result_decimal_places = self.app_settings.result_decimal_places
+        self.font_size = self.app_settings.font_size
         self._loading_window_state = True
         self._loading_content = True
         self._evaluation_pool = QThreadPool(self)
@@ -991,7 +995,7 @@ class MainWindow(QMainWindow):
         self._active_evaluations = 0
         self._pending_evaluation: tuple[int, str, int] | None = None
         self._evaluation_workers: set[EvaluationWorker] = set()
-        self.resize(_settings_size(self.settings, WINDOW_SIZE_KEY, DEFAULT_WINDOW_SIZE))
+        self.resize(self.app_settings.window_size)
 
         # Set up Tab Bar
         self.tab_bar = TabBar()
@@ -1104,7 +1108,7 @@ class MainWindow(QMainWindow):
                     n += 1
                 title = f"Sheet {n}"
 
-        sheet = Sheet(self.settings, self, content, path, title)
+        sheet = Sheet(self.settings, self, content, path, title, self.font_size)
 
         # Apply current dark mode setting to the sheet
         theme = DARK_THEME if self.dark_mode else LIGHT_THEME
@@ -1226,8 +1230,10 @@ class MainWindow(QMainWindow):
             return
 
         count = self.stacked_widget.count()
-        self.settings.setValue("tabs/count", count)
-        self.settings.setValue("tabs/current", self.stacked_widget.currentIndex())
+        self.app_settings.set_tabs_count(count)
+        self.app_settings.set_tabs_current(self.stacked_widget.currentIndex())
+        self.settings.setValue(TABS_COUNT_KEY, self.app_settings.tabs_count)
+        self.settings.setValue(TABS_CURRENT_KEY, self.app_settings.tabs_current)
 
         for i in range(count):
             sheet = self.stacked_widget.widget(i)
@@ -1243,8 +1249,8 @@ class MainWindow(QMainWindow):
     def load_tabs(self) -> None:
         self._loading_content = True
 
-        count = _settings_int(self.settings, "tabs/count", 0, minimum=0, maximum=100)
-        current_index = _settings_int(self.settings, "tabs/current", 0, minimum=0, maximum=100)
+        count = self.app_settings.tabs_count
+        current_index = self.app_settings.tabs_current
 
         loaded_any = False
         if count > 0:
@@ -1533,7 +1539,8 @@ class MainWindow(QMainWindow):
     def _save_window_size(self) -> None:
         if self._loading_window_state:
             return
-        self.settings.setValue(WINDOW_SIZE_KEY, self.size())
+        self.app_settings.window_size = self.size()
+        self.settings.setValue(WINDOW_SIZE_KEY, self.app_settings.window_size)
         self.settings.sync()
 
     def resizeEvent(self, event) -> None:
@@ -1563,7 +1570,8 @@ class MainWindow(QMainWindow):
         self._apply_style()
 
     def set_alternating_row_background(self, enabled: bool) -> None:
-        self.alternating_row_background = enabled
+        self.app_settings.set_alternating_row_background(enabled)
+        self.alternating_row_background = self.app_settings.alternating_row_background
         self.settings.setValue(ALTERNATING_ROW_BACKGROUND_KEY, enabled)
         self.apply_settings()
 
@@ -1571,18 +1579,19 @@ class MainWindow(QMainWindow):
         self.set_theme_mode(THEME_MODE_DARK if enabled else THEME_MODE_LIGHT)
 
     def set_theme_mode(self, mode: str) -> None:
-        self.theme_mode = _normalize_theme_mode(mode)
+        self.app_settings.set_theme_mode(mode)
+        self.theme_mode = self.app_settings.theme_mode_effective
         self.settings.setValue(THEME_MODE_KEY, self.theme_mode)
         self.apply_settings()
         self.settings.setValue(DARK_MODE_KEY, self.dark_mode)
 
     def set_result_decimal_places(self, places: int) -> None:
-        self.result_decimal_places = max(0, min(int(places), 20))
+        self.result_decimal_places = self.app_settings.set_result_decimal_places(places)
         self.settings.setValue(RESULT_DECIMAL_PLACES_KEY, self.result_decimal_places)
         self.recalculate()
 
     def set_font_size(self, size: int) -> None:
-        self.font_size = max(8, min(int(size), 72))
+        self.font_size = self.app_settings.set_font_size(size)
         self.settings.setValue(FONT_SIZE_KEY, self.font_size)
         self.apply_settings()
 
@@ -1794,39 +1803,7 @@ def _document_variables(text: str) -> list[str]:
     return words
 
 
-def _settings_bool(settings: QSettings, key: str, default: bool) -> bool:
-    value = settings.value(key, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
 def _normalize_theme_mode(value: str | bool) -> str:
     if isinstance(value, bool):
         return THEME_MODE_DARK if value else THEME_MODE_LIGHT
     return value if value in THEME_MODES else THEME_MODE_LIGHT
-
-
-def _settings_theme_mode(settings: QSettings) -> str:
-    value = settings.value(THEME_MODE_KEY)
-    if isinstance(value, str) and value in THEME_MODES:
-        return value
-    return THEME_MODE_DARK if _settings_bool(settings, DARK_MODE_KEY, False) else THEME_MODE_LIGHT
-
-
-def _settings_int(settings: QSettings, key: str, default: int, minimum: int, maximum: int) -> int:
-    value = settings.value(key, default)
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(minimum, min(parsed, maximum))
-
-
-def _settings_size(settings: QSettings, key: str, default: QSize) -> QSize:
-    value = settings.value(key, default)
-    if isinstance(value, QSize) and value.isValid():
-        return value
-    return default

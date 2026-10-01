@@ -805,8 +805,13 @@ class CompletionTextEdit(StripedPlainTextEdit):
         if not block.isValid():
             return None
         position_in_block = cursor.positionInBlock()
-        for match in LINK_RE.finditer(block.text()):
-            if match.start() <= position_in_block < match.end():
+        text = block.text()
+        for match in LINK_RE.finditer(text):
+            # Regex spans count Unicode code points; Qt positions count UTF-16
+            # code units, including two units for characters such as emoji.
+            start = len(text[:match.start()].encode("utf-16-le")) // 2
+            end = start + len(match.group("url").encode("utf-16-le")) // 2
+            if start <= position_in_block < end:
                 url = match.group("url")
                 return url if "://" in url else f"http://{url}"
         return None
@@ -944,6 +949,8 @@ class CompletionTextEdit(StripedPlainTextEdit):
         self.setTextCursor(cursor)
 
     def _handle_editor_shortcut_keypress(self, event: QKeyEvent) -> bool:
+        if self.isReadOnly():
+            return False
         if self._duplicate_line_shortcut_pressed(event):
             self._duplicate_selection_or_line()
             event.accept()

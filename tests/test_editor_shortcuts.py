@@ -185,3 +185,38 @@ def test_line_edits_preserve_character_formatting(editor, operation):
         editor._move_current_line_or_selection(1)
     select(editor, 5, 4)
     assert editor.textCursor().charFormat().foreground().color().name() == "#ff0000"
+
+
+@pytest.mark.parametrize(
+    ("code", "modifiers"),
+    [
+        (Qt.Key.Key_D, Qt.KeyboardModifier.ControlModifier),
+        (Qt.Key.Key_Backspace, Qt.KeyboardModifier.ControlModifier),
+        (Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier),
+        (Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier),
+    ],
+)
+@pytest.mark.parametrize("selected", [False, True])
+def test_shortcuts_respect_read_only_editor(editor, code, modifiers, selected):
+    editor.setPlainText("one\ntwo\nthree")
+    select(editor, 5, 4 if selected else None)
+    editor.setReadOnly(True)
+    key(editor, code, modifiers)
+    assert editor.toPlainText() == "one\ntwo\nthree"
+    assert not editor.document().isUndoAvailable()
+
+
+@pytest.mark.parametrize("prefix", ["😀 ", "😀😀 ", "é "])
+@pytest.mark.parametrize("location", ["before", "first", "last", "after"])
+def test_url_click_boundaries_after_unicode_prefix(editor, qtbot, monkeypatch, prefix, location):
+    url = "https://example.com"
+    opened = []
+    monkeypatch.setattr("pnumi.ui.QDesktopServices.openUrl", lambda value: opened.append(value.toString()))
+    editor.setPlainText(prefix + url + " ")
+    editor.resize(700, 100)
+    editor.show()
+    start = len(prefix.encode("utf-16-le")) // 2
+    offsets = {"before": -1, "first": 0, "last": len(url) - 1, "after": len(url)}
+    select(editor, start + offsets[location])
+    qtbot.mouseClick(editor.viewport(), Qt.MouseButton.LeftButton, LINK_MODIFIER, editor.cursorRect().center())
+    assert opened == ([url] if location in {"first", "last"} else [])
